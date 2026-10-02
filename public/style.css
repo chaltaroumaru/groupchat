@@ -535,7 +535,9 @@ label.check {
   border-radius: 14px;
   width: 100%;
   max-width: 560px;
-  max-height: 90vh;
+  /* 画面に収まる高さにして、はみ出した分は .modal-body をスクロールさせる */
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
 }
@@ -553,6 +555,9 @@ label.check {
 .modal-body {
   padding: 4px 18px 18px;
   overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .modal-foot {
   display: flex;
@@ -816,7 +821,7 @@ table.list th {
     padding: calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom));
   }
   .modal {
-    max-height: 100%;
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   }
   .composer form {
     gap: 6px;
@@ -883,4 +888,69 @@ a.btn {
   text-decoration: none;
   color: inherit;
   display: inline-block;
+}
+
+/* ---- ロール管理 ---- */
+.role-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.role-card.new {
+  border-style: dashed;
+  border-color: #fdba74;
+  background: #fffbf5;
+}
+.role-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.role-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+  padding: 0;
+}
+.swatch.on {
+  box-shadow: 0 0 0 2px var(--text);
+}
+.level-desc {
+  margin-top: -2px;
+}
+.role-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.role-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0 10px;
+}
+details.level-help {
+  margin-top: 12px;
+}
+details.level-help summary {
+  cursor: pointer;
+  color: var(--accent-dark);
+  font-size: 0.9em;
 }

@@ -1268,9 +1268,9 @@ function groupSettingsModal(tab = 'members') {
   const g = state.group;
   const tabs = isAdmin()
     ? [
-        ['members', 'メンバー・ロール付与'],
-        ['roles', 'ロール管理'],
-        ['info', 'グループ情報・招待'],
+        ['members', 'メンバー'],
+        ['roles', 'ロール'],
+        ['info', '招待・設定'],
       ]
     : [
         ['members', 'メンバー'],
@@ -1387,48 +1387,67 @@ function membersTab(g, refresh) {
 }
 
 function rolesTab(g, refresh) {
-  const row = (r) => {
-    const name = h('input', { type: 'text', value: r?.name ?? '', maxlength: 30, placeholder: '例: 調理班' });
-    const color = h(
-      'select',
-      {},
-      ROLE_COLORS.map((c) => h('option', { value: c, selected: (r?.color ?? ROLE_COLORS[5]) === c, style: { background: c } }, c)),
-    );
-    const swatch = h('span', { class: 'chip', style: { background: color.value, width: '22px', height: '22px', padding: 0 } });
-    color.addEventListener('change', () => (swatch.style.background = color.value));
-    const current = r?.level ?? 'write';
-    // 管理者権限の付与・取り消しはオーナーのみ
-    const ownerOnly = !g.me.isOwner;
-    const level = h(
-      'select',
-      { disabled: ownerOnly && current === 'admin', title: LEVEL_HELP[current] },
-      Object.entries(LEVEL_LABEL).map(([v, label]) =>
-        h('option', { value: v, selected: current === v, disabled: ownerOnly && v === 'admin' && current !== 'admin' }, label),
+  // 管理者権限の付与・取り消しはオーナーのみ
+  const ownerOnly = !g.me.isOwner;
+
+  /** ロール 1 件分の編集カード(r = null なら新規追加用) */
+  const card = (r) => {
+    const name = h('input', { type: 'text', value: r?.name ?? '', maxlength: 30, placeholder: '例: 調理班', 'aria-label': 'ロール名' });
+    let color = r?.color ?? ROLE_COLORS[5];
+    const dot = h('span', { class: 'role-dot', style: { background: color } });
+    const swatches = h(
+      'div',
+      { class: 'swatches', role: 'radiogroup', 'aria-label': '色' },
+      ROLE_COLORS.map((c) =>
+        h('button', {
+          type: 'button',
+          class: `swatch ${c === color ? 'on' : ''}`,
+          style: { background: c },
+          'aria-label': c,
+          onclick: (e) => {
+            color = c;
+            dot.style.background = c;
+            swatches.querySelectorAll('.swatch').forEach((el) => el.classList.toggle('on', el === e.currentTarget));
+          },
+        }),
       ),
     );
-    level.addEventListener('change', () => (level.title = LEVEL_HELP[level.value]));
+    const current = r?.level ?? 'write';
+    const help = h('div', { class: 'muted level-desc' }, LEVEL_HELP[current]);
+    const level = h(
+      'select',
+      { disabled: ownerOnly && current === 'admin', 'aria-label': '権限' },
+      Object.entries(LEVEL_LABEL).map(([v, label]) =>
+        h(
+          'option',
+          { value: v, selected: current === v, disabled: ownerOnly && v === 'admin' && current !== 'admin' },
+          `${LEVEL_ICON[v]} ${label}`,
+        ),
+      ),
+    );
+    level.addEventListener('change', () => (help.textContent = LEVEL_HELP[level.value]));
     const save = guard(async () => {
-      const body = { name: name.value, color: color.value, level: level.value };
+      const body = { name: name.value, color, level: level.value };
       if (r) await api('PATCH', `/api/groups/${g.group.id}/roles/${r.id}`, body);
       else await api('POST', `/api/groups/${g.group.id}/roles`, body);
       await refresh();
     });
     return h(
-      'tr',
-      {},
-      h('td', {}, name),
-      h('td', {}, h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, swatch, color)),
-      h('td', {}, level),
+      'div',
+      { class: `role-card ${r ? '' : 'new'}` },
+      r ? null : h('strong', {}, '＋ 新しいロールを追加'),
+      h('div', { class: 'role-row' }, dot, name),
+      swatches,
+      h('div', { class: 'role-row' }, level),
+      help,
       h(
-        'td',
-        { style: { whiteSpace: 'nowrap' } },
-        h('button', { class: 'btn small primary', onclick: save }, r ? '保存' : '追加'),
+        'div',
+        { class: 'role-actions' },
         r
           ? h(
               'button',
               {
                 class: 'btn small danger',
-                style: { marginLeft: '4px' },
                 disabled: ownerOnly && r.level === 'admin',
                 onclick: guard(async () => {
                   if (!confirm(`ロール「${r.name}」を削除しますか?このロールで閲覧していた制限付きチャットは見えなくなります。`)) return;
@@ -1439,30 +1458,33 @@ function rolesTab(g, refresh) {
               '削除',
             )
           : null,
+        h('button', { class: 'btn small primary', onclick: save }, r ? '保存' : '追加'),
       ),
     );
   };
+
   return h(
     'div',
     {},
+    // 追加フォームを先頭に置き、スクロールしなくても使えるようにする
+    card(null),
     h(
-      'table',
-      { class: 'list level-help' },
-      h('tr', {}, h('th', {}, 'ロールの権限'), h('th', {}, 'できること')),
-      Object.keys(LEVEL_LABEL).map((l) => h('tr', {}, h('td', {}, `${LEVEL_ICON[l]} ${LEVEL_LABEL[l]}`), h('td', {}, LEVEL_HELP[l]))),
+      'details',
+      { class: 'level-help' },
+      h('summary', {}, 'ロールの権限について'),
+      h(
+        'table',
+        { class: 'list' },
+        Object.keys(LEVEL_LABEL).map((l) => h('tr', {}, h('td', {}, `${LEVEL_ICON[l]} ${LEVEL_LABEL[l]}`), h('td', {}, LEVEL_HELP[l]))),
+      ),
+      h(
+        'p',
+        { class: 'muted' },
+        'ロールは「メンバー」タブでメンバーに付与できます。複数のロールを持つメンバーには最も強い権限が適用され、ロールが無いメンバーは「閲覧・送信」になります。管理者権限の付与・取り消しはオーナーのみ行えます。',
+      ),
     ),
-    h(
-      'p',
-      { class: 'muted' },
-      'ロールは「メンバー・ロール付与」タブでメンバーに付与できます。複数のロールを持つメンバーには最も強い権限が適用され、ロールが無いメンバーは「閲覧・送信」になります。管理者権限の付与・取り消しはオーナーのみ行えます。',
-    ),
-    h(
-      'table',
-      { class: 'list' },
-      h('tr', {}, h('th', {}, 'ロール名'), h('th', {}, '色'), h('th', {}, '権限'), h('th', {}, '')),
-      g.roles.map(row),
-      row(null),
-    ),
+    h('h4', {}, `作成済みのロール(${g.roles.length})`),
+    g.roles.length ? h('div', { class: 'role-list' }, g.roles.map(card)) : h('p', { class: 'muted' }, 'まだロールがありません'),
   );
 }
 
