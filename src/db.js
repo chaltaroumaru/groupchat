@@ -126,6 +126,30 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_announcement ON attachments(announcement_id);
+
+-- プッシュ通知の宛先(端末ごと)
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id          INTEGER PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint    TEXT    NOT NULL UNIQUE,
+  p256dh      TEXT    NOT NULL,
+  auth        TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
+-- 通知をオフにしたチャット
+CREATE TABLE IF NOT EXISTS channel_mutes (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  channel_id  INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, channel_id)
+);
+
+-- サーバーの設定値(プッシュ通知の鍵など)
+CREATE TABLE IF NOT EXISTS app_settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
 `;
 
 function openDatabase(file) {

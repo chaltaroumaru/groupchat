@@ -18,7 +18,15 @@ function createRealtime(db) {
       socket.data.user = user;
       next();
     });
-    io.on('connection', (socket) => socket.join(`user:${socket.data.user.id}`));
+    io.on('connection', (socket) => {
+      socket.join(`user:${socket.data.user.id}`);
+      // 今どの画面を開いているか(開いているチャットへの通知を鳴らさないため)
+      socket.data.view = null;
+      socket.on('presence', (p) => {
+        const id = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null);
+        socket.data.view = p && p.visible ? { groupId: id(p.groupId), channelId: id(p.channelId) } : null;
+      });
+    });
     return io;
   }
 
@@ -35,11 +43,23 @@ function createRealtime(db) {
     toUsers(ids, event, payload);
   }
 
+  /** ユーザーがアプリを前面に表示して、指定のグループ・チャットを見ているか */
+  function isViewing(userId, { groupId, channelId }) {
+    if (!io) return false;
+    const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+    for (const sid of room ?? []) {
+      const v = io.sockets.sockets.get(sid)?.data.view;
+      if (!v) continue;
+      if (channelId !== undefined ? v.channelId === channelId : v.groupId === groupId) return true;
+    }
+    return false;
+  }
+
   function close() {
     if (io) io.close();
   }
 
-  return { attach, toUsers, toGroup, close };
+  return { attach, toUsers, toGroup, isViewing, close };
 }
 
 module.exports = { createRealtime };

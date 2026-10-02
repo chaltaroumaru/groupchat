@@ -5,6 +5,7 @@ const express = require('express');
 const { requireAuth } = require('./auth');
 const { HttpError } = require('./util');
 const { createUploader } = require('./uploads');
+const { createPush } = require('./push');
 
 /**
  * @param {object} deps
@@ -13,10 +14,10 @@ const { createUploader } = require('./uploads');
  * @param {{ toUsers: Function, toGroup: Function }} deps.rt
  * @param {{ baseUrl: string, secureCookies: boolean, exposeDevVerifyLink: boolean }} deps.config
  */
-function createApp({ db, mailer, rt, config }) {
+function createApp({ db, mailer, rt, config, push = createPush({ db, rt, config }) }) {
   const app = express();
   const uploader = createUploader();
-  const deps = { db, mailer, rt, config, uploader };
+  const deps = { db, mailer, rt, config, uploader, push };
 
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? false);
@@ -35,6 +36,7 @@ function createApp({ db, mailer, rt, config }) {
   api.use('/groups', require('./routes/groups')(deps));
   api.use(require('./routes/channels')(deps));
   api.use(require('./routes/announcements')(deps));
+  api.use('/push', require('./routes/push')(deps));
   app.use('/api', api);
 
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not Found')));

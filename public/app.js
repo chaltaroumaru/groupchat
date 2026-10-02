@@ -37,6 +37,7 @@ const state = {
   unreadChannels: new Set(),
   sidebarOpen: false,
   annBannerOpen: false, // チャット上部のアナウンスを全文表示しているか
+  pushStatus: null, // この端末の通知の状態(pushStatus() の値)
 };
 let socket = null;
 let pendingFiles = [];
@@ -429,7 +430,7 @@ function modal(title, body, { wide } = {}) {
     ),
   );
   document.body.append(bg);
-  bg.querySelector('input, textarea, select')?.focus();
+  bg.querySelector('input:not([type=checkbox]), textarea, select')?.focus();
   return { close, root: bg };
 }
 
@@ -616,11 +617,13 @@ function inviteNotice() {
   return h('div', { class: 'notice' }, '🎟 グループへの招待を受け取りました。ログイン(初めての人は新規登録)すると自動で参加します。');
 }
 
-async function startMain() {
+async function startMain(navTarget = null) {
   connectSocket();
+  syncPush();
   const invitedGroup = await acceptPendingInvite();
   await loadGroups();
   if (invitedGroup) return selectGroup(invitedGroup);
+  if (navTarget && state.groups.some((g) => g.id === navTarget.groupId)) return selectGroup(navTarget.groupId, navTarget.view);
   const saved = Number(localStorage.getItem('groupId'));
   const gid = state.groups.find((g) => g.id === saved)?.id ?? state.groups[0]?.id;
   if (gid) await selectGroup(gid);
@@ -631,13 +634,15 @@ async function loadGroups() {
   state.groups = (await api('GET', '/api/groups')).groups;
 }
 
-async function selectGroup(gid) {
+async function selectGroup(gid, view = null) {
   state.group = await api('GET', `/api/groups/${gid}`);
   localStorage.setItem('groupId', gid);
   state.unreadChannels.clear();
+  state.annBannerOpen = false;
   await Promise.all([loadChannels(), loadAnnouncements()]);
   const first = state.channels[0];
-  state.view = first ? { type: 'channel', id: first.id } : { type: 'announcements' };
+  if (view?.type === 'channel' && !state.channels.some((c) => c.id === view.id)) view = null;
+  state.view = view ?? (first ? { type: 'channel', id: first.id } : { type: 'announcements' });
   await openView(state.view);
 }
 
@@ -675,6 +680,7 @@ async function openView(view) {
   }
   render();
   scrollToBottom();
+  sendPresence();
 }
 
 function scrollToBottom() {
@@ -752,6 +758,12 @@ function renderSidebar() {
         h('div', { class: 'section-title' }, h('span', {}, 'グループ')),
         h(
           'div',
+          { class: `nav-item ${state.pushStatus && state.pushStatus !== 'on' ? 'push-off' : ''}`, onclick: guard(notificationModal) },
+          h('span', {}, state.pushStatus === 'on' ? '🔔' : '🔕'),
+          h('span', { class: 'name' }, state.pushStatus === 'on' || !state.pushStatus ? '通知設定' : '通知をオンにする'),
+        ),
+        h(
+          'div',
           { class: 'nav-item', onclick: () => groupSettingsModal() },
           h('span', {}, isAdmin() ? '⚙️' : '👥'),
           h('span', { class: 'name' }, isAdmin() ? 'グループ設定・ロール' : 'メンバー一覧'),
@@ -770,6 +782,8 @@ function renderSidebar() {
       {
         class: 'btn small',
         onclick: guard(async () => {
+          // ログアウト後はこの端末に通知を送らない(次にログインしたときに自動で登録し直す)
+          await disablePush({ keepPreference: true });
           await api('POST', '/api/auth/logout');
           state.me = null;
           state.group = null;
@@ -1871,7 +1885,10 @@ function connectSocket() {
 
   // 電波が弱い場所での切断・再接続を利用者に知らせる
   socket.on('disconnect', (reason) => reason !== 'io client disconnect' && setOffline(true));
-  socket.on('connect', () => setOffline(false));
+  socket.on('connect', () => {
+    setOffline(false);
+    sendPresence();
+  });
 
   socket.on('message:new', (msg) => {
     const ch = currentChannel();
@@ -2023,6 +2040,254 @@ function rerenderAnnouncementList() {
 }
 
 // ============================================================
+// プッシュ通知
+// ============================================================
+
+const device = {
+  ios: /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1),
+  android: /Android/.test(navigator.userAgent),
+  // LINE・Instagram などのアプリ内ブラウザは通知もホーム画面追加もできない
+  inApp: /\bLine\/|FBAN|FBAV|Instagram/i.test(navigator.userAgent),
+  standalone: () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true,
+  pushCapable: () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window,
+};
+
+const pushPref = {
+  get: () => storage((s) => s.getItem('pushEnabled')) === '1',
+  set: (on) => storage((s) => (on ? s.setItem('pushEnabled', '1') : s.removeItem('pushEnabled'))),
+};
+
+/** この端末の通知の状態: unsupported | needs-install | in-app | denied | on | off */
+async function pushStatus() {
+  if (device.inApp) return 'in-app';
+  if (!device.pushCapable()) return device.ios && !device.standalone() ? 'needs-install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  if (Notification.permission !== 'granted') return 'off';
+  const reg = await navigator.serviceWorker.ready;
+  return (await reg.pushManager.getSubscription()) && pushPref.get() ? 'on' : 'off';
+}
+
+function urlBase64ToUint8Array(base64) {
+  const raw = atob((base64 + '='.repeat((4 - (base64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function subscribePush() {
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    const { publicKey } = await api('GET', '/api/push/key');
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
+  }
+  await api('POST', '/api/push/subscribe', { subscription: sub.toJSON() });
+  pushPref.set(true);
+}
+
+/** ボタン操作から呼ぶこと(iPhone はタップ直後でないと許可ダイアログが出ない) */
+async function enablePush() {
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    throw new Error(permission === 'denied' ? '通知がブロックされました。下の手順で許可してください' : '通知が許可されませんでした');
+  }
+  await subscribePush();
+}
+
+/** この端末の通知をオフにする(サーバーから宛先を消す) */
+async function disablePush({ keepPreference = false } = {}) {
+  if (!device.pushCapable()) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  if (sub) await api('POST', '/api/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {});
+  if (!keepPreference) {
+    pushPref.set(false);
+    await sub?.unsubscribe();
+  }
+}
+
+/** ログイン時: 以前通知をオンにしていた端末なら宛先を登録し直す(鍵の更新やユーザー切り替えに対応) */
+async function syncPush() {
+  try {
+    if (pushPref.get() && device.pushCapable() && Notification.permission === 'granted') await subscribePush();
+  } catch (err) {
+    console.warn('通知の再登録に失敗しました', err);
+  }
+  state.pushStatus = await pushStatus().catch(() => 'unsupported');
+  rerenderSidebar();
+}
+
+/** 今どの画面を見ているかをサーバーに知らせる(開いているチャットの通知を鳴らさないため) */
+function sendPresence() {
+  if (!socket?.connected) return;
+  socket.emit('presence', {
+    groupId: state.group?.group.id ?? null,
+    channelId: state.view?.type === 'channel' ? state.view.id : null,
+    visible: document.visibilityState === 'visible',
+  });
+}
+
+/** 通知をタップして開いたときの移動先(?g=グループ&c=チャット / &ann=1) */
+function parseNavTarget(search) {
+  const p = new URLSearchParams(search);
+  const g = Number(p.get('g'));
+  if (!g) return null;
+  const c = Number(p.get('c'));
+  return { groupId: g, view: c ? { type: 'channel', id: c } : p.get('ann') ? { type: 'announcements' } : null };
+}
+
+async function navigateTo(target) {
+  if (!target || !state.groups.some((g) => g.id === target.groupId)) return;
+  if (state.group?.group.id !== target.groupId) return selectGroup(target.groupId, target.view);
+  if (target.view) await openView(target.view);
+}
+
+const PUSH_HELP = {
+  'in-app': () => [
+    h('p', {}, 'LINE などのアプリの中で開いているため、通知を受け取れません。'),
+    h(
+      'ol',
+      {},
+      h('li', {}, '画面の右上(または右下)の「︙」や共有ボタンをタップ'),
+      h('li', {}, device.ios ? '「Safariで開く」を選ぶ' : '「ブラウザで開く」または「Chromeで開く」を選ぶ'),
+      h('li', {}, '開いた画面でログインして、もう一度この画面から通知をオンにする'),
+    ),
+  ],
+  'needs-install': () => [
+    h('p', {}, 'iPhone で通知を受け取るには、ホーム画面にアプリを追加して、そこから開く必要があります。'),
+    h(
+      'ol',
+      {},
+      h('li', {}, 'Safari の下にある共有ボタン(□に↑のアイコン)をタップ'),
+      h('li', {}, '「ホーム画面に追加」→ 右上の「追加」をタップ'),
+      h('li', {}, 'ホーム画面にできた「学祭チャット」のアイコンから開いてログイン'),
+      h('li', {}, 'メニューの「🔔 通知設定」から通知をオンにする'),
+    ),
+    h('p', { class: 'muted' }, '※ iOS 16.4 以上が必要です(設定 → 一般 → 情報 → iOSバージョン で確認できます)'),
+  ],
+  unsupported: () => [
+    h('p', {}, 'このブラウザは通知に対応していません。'),
+    h(
+      'p',
+      {},
+      'Android は Chrome、iPhone は Safari でホーム画面に追加したアプリ、パソコンは Chrome / Edge / Safari / Firefox で開いてください。',
+    ),
+  ],
+  denied: () => [
+    h('p', {}, '通知がブロックされています。次の手順で許可してから、この画面を開き直してください。'),
+    device.ios
+      ? h('ol', {}, h('li', {}, 'iPhone の「設定」→「通知」→「学祭チャット」'), h('li', {}, '「通知を許可」をオンにする'))
+      : device.android
+        ? h(
+            'ol',
+            {},
+            h('li', {}, 'Chrome のアドレスバーの左にあるアイコンをタップ →「権限」'),
+            h('li', {}, '「通知」を「許可」にする'),
+            h('li', {}, 'それでも届かない場合: Android の「設定」→「アプリ」→「Chrome」→「通知」をオン'),
+          )
+        : h(
+            'ol',
+            {},
+            h('li', {}, 'アドレスバーの左にある鍵(またはサイト情報)のアイコンをクリック'),
+            h('li', {}, '「通知」を「許可」にする'),
+          ),
+  ],
+};
+
+async function notificationModal() {
+  const statusBox = h('div', { class: 'push-status' });
+  const { close } = modal('🔔 通知設定', [statusBox, renderMuteList()]);
+
+  async function draw() {
+    const status = await pushStatus().catch(() => 'unsupported');
+    state.pushStatus = status;
+    rerenderSidebar();
+    const err = h('div', { class: 'error' });
+    const run = (fn) =>
+      guard(async (e) => {
+        e.target.disabled = true;
+        err.textContent = '';
+        try {
+          await fn();
+          await draw();
+        } catch (ex) {
+          err.textContent = ex.message;
+          e.target.disabled = false;
+        }
+      });
+    const title = h('strong', {}, 'この端末の通知');
+    if (status === 'on') {
+      statusBox.replaceChildren(
+        title,
+        h('p', { class: 'push-on' }, '✅ オン — アプリを閉じていても新着メッセージとアナウンスが届きます'),
+        h(
+          'div',
+          { class: 'push-actions' },
+          h(
+            'button',
+            {
+              class: 'btn small',
+              onclick: run(async () => {
+                const { delivered } = await api('POST', '/api/push/test');
+                toast(
+                  delivered ? 'テスト通知を送りました' : 'この端末に届けられませんでした。一度オフにしてからオンにし直してください',
+                  delivered ? '' : 'error',
+                );
+              }),
+            },
+            'テスト通知を送る',
+          ),
+          h('button', { class: 'btn small', onclick: run(() => disablePush()) }, 'この端末の通知をオフ'),
+        ),
+        err,
+      );
+    } else if (status === 'off') {
+      statusBox.replaceChildren(
+        title,
+        h('p', {}, 'オフになっています。オンにすると、アプリを閉じていても通知が届きます。'),
+        h('button', { class: 'btn primary', onclick: run(enablePush) }, '🔔 通知をオンにする'),
+        h('p', { class: 'muted' }, '「許可」を求められたら「許可」を選んでください。'),
+        err,
+      );
+    } else {
+      statusBox.replaceChildren(title, h('div', { class: 'push-help' }, PUSH_HELP[status]()));
+    }
+  }
+  await draw();
+  return close;
+}
+
+function renderMuteList() {
+  if (!state.group) return null;
+  return h(
+    'div',
+    { class: 'mute-list' },
+    h('strong', {}, `チャットごとの通知(${state.group.group.name})`),
+    h('p', { class: 'muted' }, 'オフにしたチャットは通知されません(未読の印は付きます)。📢 アナウンスは大事な連絡のため常に通知されます。'),
+    state.channels.map((c) => {
+      const input = h('input', {
+        type: 'checkbox',
+        checked: !c.muted,
+        onchange: guard(async (e) => {
+          const on = e.target.checked;
+          try {
+            await api('PUT', `/api/channels/${c.id}/mute`, { muted: !on });
+            c.muted = !on;
+          } catch (ex) {
+            e.target.checked = !on;
+            throw ex;
+          }
+        }),
+      });
+      return h(
+        'label',
+        { class: 'mute-row' },
+        h('span', { class: 'name' }, `${c.restricted ? '🔒' : '#'} ${c.name}`),
+        h('span', { class: 'switch' }, input, h('span', { class: 'slider' })),
+      );
+    }),
+  );
+}
+
+// ============================================================
 // 起動
 // ============================================================
 
@@ -2047,8 +2312,15 @@ function setOffline(offline) {
   const params = new URLSearchParams(location.search);
   const verified = params.get('verified');
   const invite = params.get('invite');
+  const navTarget = parseNavTarget(location.search);
   if (invite) pendingInvite.set(invite);
-  if (verified !== null || invite) history.replaceState(null, '', '/');
+  if (verified !== null || invite || navTarget) history.replaceState(null, '', '/');
+
+  // 通知をタップしたとき(アプリが開いていれば Service Worker から移動先が届く)
+  navigator.serviceWorker?.addEventListener('message', (e) => {
+    if (e.data?.type === 'navigate' && state.me) guard(() => navigateTo(parseNavTarget(new URL(e.data.url, location.origin).search)))();
+  });
+  document.addEventListener('visibilitychange', sendPresence);
 
   // スマホ表示でサイドバー外をタップしたら閉じる
   document.addEventListener('click', (e) => {
@@ -2062,7 +2334,7 @@ function setOffline(offline) {
   try {
     const { user } = await api('GET', '/api/auth/me');
     state.me = user;
-    await startMain();
+    await startMain(navTarget);
   } catch {
     renderAuth(
       'login',

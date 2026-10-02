@@ -12,7 +12,7 @@ const ANNOUNCEMENT_SELECT = `
          EXISTS (SELECT 1 FROM announcement_reads r WHERE r.announcement_id = a.id AND r.user_id = ?) AS read_by_me
     FROM announcements a LEFT JOIN users u ON u.id = a.user_id`;
 
-module.exports = function announcementRoutes({ db, rt, uploader }) {
+module.exports = function announcementRoutes({ db, rt, uploader, push }) {
   const router = express.Router();
 
   function getAnnouncement(id, userId) {
@@ -54,6 +54,7 @@ module.exports = function announcementRoutes({ db, rt, uploader }) {
     });
     const [announcement] = serializeAnnouncements(db, [getAnnouncement(id, req.user.id)]);
     rt.toGroup(req.groupId, 'announcement:new', { ...announcement, readByMe: false });
+    push.notifyAnnouncement(req.groupId, announcement);
     res.status(201).json({ announcement });
   });
 

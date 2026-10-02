@@ -27,10 +27,11 @@ function serializeChannel(db, ch, userId, membership = perm.getMembership(db, ch
     roles: channelRoles(db, ch.id),
     myPermission: perm.resolveChannelPermission(db, ch, userId, membership).permission,
     canManage: perm.canManageChannel(membership, ch, userId),
+    muted: !!db.prepare('SELECT 1 FROM channel_mutes WHERE user_id = ? AND channel_id = ?').get(userId, ch.id),
   };
 }
 
-module.exports = function channelRoutes({ db, rt, uploader }) {
+module.exports = function channelRoutes({ db, rt, uploader, push }) {
   const router = express.Router();
 
   const channelsChanged = (groupId) => rt.toGroup(groupId, 'channels:changed', { groupId });
@@ -222,7 +223,19 @@ module.exports = function channelRoutes({ db, rt, uploader }) {
     });
     const [message] = serializeMessages(db, [db.prepare(`${MESSAGE_SELECT} WHERE m.id = ?`).get(id)]);
     rt.toUsers(perm.channelReaderIds(db, channel), 'message:new', message);
+    push.notifyMessage(channel, message);
     res.status(201).json({ message });
+  });
+
+  /** このチャットの通知をオン・オフする(自分だけの設定) */
+  router.put('/channels/:cid/mute', (req, res) => {
+    const { channel } = perm.requireChannelPermission(db, intParam(req.params.cid), req.user.id, 'read');
+    if (bool(req.body?.muted)) {
+      db.prepare('INSERT OR IGNORE INTO channel_mutes (user_id, channel_id) VALUES (?, ?)').run(req.user.id, channel.id);
+    } else {
+      db.prepare('DELETE FROM channel_mutes WHERE user_id = ? AND channel_id = ?').run(req.user.id, channel.id);
+    }
+    res.json({ muted: bool(req.body?.muted) });
   });
 
   router.delete('/messages/:mid', (req, res) => {

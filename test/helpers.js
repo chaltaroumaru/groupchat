@@ -4,6 +4,7 @@ const http = require('node:http');
 const { openDatabase } = require('../src/db');
 const { createApp } = require('../src/app');
 const { createRealtime } = require('../src/realtime');
+const { createPush } = require('../src/push');
 
 // 1x1 PNG
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
@@ -16,12 +17,20 @@ async function startServer() {
   const server = http.createServer();
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
-  const app = createApp({
+  const config = { baseUrl, secureCookies: false, exposeDevVerifyLink: false };
+  // 実際には送信せず、送ろうとした通知を記録する
+  const pushes = [];
+  const push = createPush({
     db,
-    mailer,
     rt,
-    config: { baseUrl, secureCookies: false, exposeDevVerifyLink: false },
+    config,
+    env: {},
+    send: async (sub, body) => {
+      if (sub.endpoint.includes('gone')) throw Object.assign(new Error('gone'), { statusCode: 410 });
+      pushes.push({ endpoint: sub.endpoint, ...JSON.parse(body) });
+    },
   });
+  const app = createApp({ db, mailer, rt, config, push });
   server.on('request', app);
   rt.attach(server);
 
@@ -29,6 +38,7 @@ async function startServer() {
     baseUrl,
     db,
     mails,
+    pushes,
     client: () => new Client(baseUrl),
     /** 登録 → メール認証 → ログイン済みのクライアントを返す */
     async user(name) {
