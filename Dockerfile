@@ -1,5 +1,10 @@
 FROM node:22-slim
 
+# Litestream が HTTPS でバックアップ先に接続するための証明書(slim イメージには含まれない)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 # Litestream(SQLite の常時バックアップツール)
 ARG LITESTREAM_VERSION=0.3.13
 ARG TARGETARCH=amd64
