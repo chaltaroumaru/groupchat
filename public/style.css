@@ -616,15 +616,108 @@ table.list th {
 .lightbox {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.85);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: rgba(12, 12, 12, var(--lb-fade, 1));
+  color: #fff;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.lb-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
+  position: relative;
+  z-index: 2;
+}
+.lb-counter {
+  font-size: 0.9em;
+  opacity: 0.85;
+}
+.lb-spacer {
+  flex: 1;
+}
+.lb-btn {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.95em;
+  cursor: pointer;
+}
+.lb-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+.lb-btn:disabled {
+  opacity: 0.5;
+}
+.lb-close {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font-size: 1.1em;
+}
+.lb-stage {
+  flex: 1;
+  min-height: 0;
   display: grid;
   place-items: center;
-  z-index: 60;
-  cursor: zoom-out;
+  overflow: hidden;
+  touch-action: none;
+  padding-bottom: env(safe-area-inset-bottom);
 }
-.lightbox img {
-  max-width: 95vw;
-  max-height: 92vh;
+.lb-img {
+  max-width: 100vw;
+  max-height: 100%;
+  transform-origin: center center;
+  will-change: transform;
+  cursor: zoom-in;
+  -webkit-touch-callout: none;
+}
+.lightbox.zoomed .lb-img {
+  cursor: grab;
+}
+.lb-img.animate {
+  transition: transform 0.2s ease-out;
+}
+.lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 44px;
+  height: 64px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 2em;
+  line-height: 1;
+  cursor: pointer;
+}
+.lb-nav:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+.lb-prev {
+  left: 8px;
+}
+.lb-next {
+  right: 8px;
+}
+.lightbox.zoomed .lb-nav {
+  display: none;
+}
+@media (pointer: coarse) {
+  /* スマホはスワイプで切り替えるので、ボタンは控えめに */
+  .lb-nav {
+    width: 32px;
+    height: 48px;
+    font-size: 1.5em;
+    background: rgba(255, 255, 255, 0.08);
+  }
 }
 
 #toasts {

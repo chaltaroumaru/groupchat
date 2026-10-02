@@ -120,9 +120,292 @@ function isAdmin() {
   return !!state.group?.me.isAdmin;
 }
 
-function openLightbox(src) {
-  const box = h('div', { class: 'lightbox', onclick: () => box.remove() }, h('img', { src, alt: '' }));
+// ---------- 画像ビューア ----------
+
+const MAX_ZOOM = 5;
+// スマホの「戻る」で前の画面ではなく開いているビューアを閉じる。
+// ✕ などで閉じたときに自分で呼ぶ history.back() の popstate は無視する
+let activeLightboxClose = null;
+let lightboxBackPending = false;
+window.addEventListener('popstate', () => {
+  if (lightboxBackPending) {
+    lightboxBackPending = false;
+    // 戻る処理の途中で次のビューアが開かれていたら、ここで履歴に積む
+    if (activeLightboxClose) history.pushState({ lightbox: true }, '');
+    return;
+  }
+  activeLightboxClose?.(true);
+});
+const DOUBLE_TAP_ZOOM = 2.5;
+
+/** 画像を保存する。スマホでは共有シート(「画像を保存」で写真アプリへ)、PC ではダウンロード */
+async function saveImage(att) {
+  const res = await fetch(att.url);
+  if (!res.ok) throw new Error('画像を取得できませんでした');
+  const blob = await res.blob();
+  const file = new File([blob], att.name, { type: blob.type });
+  if (isTouch && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+    } catch (err) {
+      if (err.name !== 'AbortError') throw err;
+    }
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = h('a', { href: url, download: att.name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * 画像を全画面で表示する。
+ * ピンチ・ダブルタップ・ホイールで拡大、拡大中はドラッグで移動、
+ * 左右スワイプ(または ← →)で前後の画像へ、下スワイプ・✕・Esc・背景タップで閉じる。
+ */
+function openLightbox(attachments, startIndex = 0) {
+  let index = startIndex;
+  let scale = 1;
+  let tx = 0;
+  let ty = 0;
+  const pointers = new Map();
+  let gesture = null;
+  let lastTap = null;
+
+  const img = h('img', { class: 'lb-img', alt: '', draggable: false });
+  const counter = h('span', { class: 'lb-counter' });
+  const prevBtn = h('button', { class: 'lb-nav lb-prev', 'aria-label': '前の画像', onclick: (e) => (e.stopPropagation(), go(-1)) }, '‹');
+  const nextBtn = h('button', { class: 'lb-nav lb-next', 'aria-label': '次の画像', onclick: (e) => (e.stopPropagation(), go(1)) }, '›');
+  const saveBtn = h(
+    'button',
+    {
+      class: 'lb-btn',
+      onclick: guard(async (e) => {
+        e.stopPropagation();
+        saveBtn.disabled = true;
+        try {
+          await saveImage(attachments[index]);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }),
+    },
+    '⬇ 保存',
+  );
+  const closeBtn = h('button', { class: 'lb-btn lb-close', 'aria-label': '閉じる', onclick: (e) => (e.stopPropagation(), close()) }, '✕');
+  const stage = h('div', { class: 'lb-stage' }, img);
+  const box = h(
+    'div',
+    { class: 'lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': '画像ビューア' },
+    h('div', { class: 'lb-bar' }, counter, h('span', { class: 'lb-spacer' }), saveBtn, closeBtn),
+    stage,
+    prevBtn,
+    nextBtn,
+  );
+
+  // ---- 表示・切り替え ----
+
+  function apply(animate) {
+    img.classList.toggle('animate', !!animate);
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    box.classList.toggle('zoomed', scale > 1);
+  }
+
+  function reset(animate) {
+    scale = 1;
+    tx = 0;
+    ty = 0;
+    apply(animate);
+  }
+
+  function show(i) {
+    index = i;
+    const att = attachments[index];
+    img.src = att.url;
+    img.alt = att.name;
+    counter.textContent = attachments.length > 1 ? `${index + 1} / ${attachments.length}` : '';
+    prevBtn.classList.toggle('hidden', index === 0);
+    nextBtn.classList.toggle('hidden', index === attachments.length - 1);
+    reset(false);
+  }
+
+  function go(delta) {
+    const next = index + delta;
+    if (next < 0 || next >= attachments.length) return reset(true);
+    show(next);
+  }
+
+  // ---- 拡大・移動 ----
+
+  const center = () => {
+    const r = stage.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
+  /** 画面上の点 (x, y) を固定したまま倍率を変える */
+  function zoomAt(x, y, newScale, animate) {
+    newScale = Math.min(MAX_ZOOM, Math.max(1, newScale));
+    const c = center();
+    const px = (x - c.x - tx) / scale;
+    const py = (y - c.y - ty) / scale;
+    scale = newScale;
+    tx = x - c.x - scale * px;
+    ty = y - c.y - scale * py;
+    clamp();
+    apply(animate);
+  }
+
+  /** 拡大した画像が画面外へ行き過ぎないように移動量を制限する */
+  function clamp() {
+    if (scale <= 1) {
+      tx = 0;
+      ty = 0;
+      return;
+    }
+    const r = stage.getBoundingClientRect();
+    const maxX = Math.max(0, (img.offsetWidth * scale - r.width) / 2);
+    const maxY = Math.max(0, (img.offsetHeight * scale - r.height) / 2);
+    tx = Math.min(maxX, Math.max(-maxX, tx));
+    ty = Math.min(maxY, Math.max(-maxY, ty));
+  }
+
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+
+  function startGesture(afterPinch = false) {
+    const pts = [...pointers.values()];
+    if (pts.length >= 2) {
+      gesture = { type: 'pinch', dist: dist(pts[0], pts[1]), scale, mid: mid(pts[0], pts[1]), tx, ty };
+    } else if (pts.length === 1) {
+      // ピンチ直後に残った指を離したときはタップ扱いにしない
+      gesture = { type: 'drag', x: pts[0].x, y: pts[0].y, tx, ty, moved: afterPinch, afterPinch };
+    }
+  }
+
+  stage.addEventListener('pointerdown', (e) => {
+    stage.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size > 2) return;
+    startGesture();
+  });
+
+  stage.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId) || !gesture) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = [...pointers.values()];
+    if (gesture.type === 'pinch' && pts.length >= 2) {
+      const m = mid(pts[0], pts[1]);
+      const c = center();
+      // ピンチ開始時に指の間にあった画像上の点を、指の中心に追従させる
+      const px = (gesture.mid.x - c.x - gesture.tx) / gesture.scale;
+      const py = (gesture.mid.y - c.y - gesture.ty) / gesture.scale;
+      scale = Math.min(MAX_ZOOM, Math.max(0.8, (gesture.scale * dist(pts[0], pts[1])) / gesture.dist));
+      tx = m.x - c.x - scale * px;
+      ty = m.y - c.y - scale * py;
+      apply(false);
+    } else if (gesture.type === 'drag') {
+      const dx = e.clientX - gesture.x;
+      const dy = e.clientY - gesture.y;
+      if (Math.hypot(dx, dy) > 8) gesture.moved = true;
+      if (scale > 1) {
+        tx = gesture.tx + dx;
+        ty = gesture.ty + dy;
+        clamp();
+      } else {
+        // 等倍のときはスワイプ操作の手応えとして画像を指に追従させる
+        tx = dx;
+        ty = Math.max(0, dy);
+        box.style.setProperty('--lb-fade', String(Math.max(0.3, 1 - ty / 400)));
+      }
+      apply(false);
+    }
+  });
+
+  function endPointer(e) {
+    if (!pointers.has(e.pointerId)) return;
+    const g = gesture;
+    pointers.delete(e.pointerId);
+    if (g?.type === 'pinch') {
+      if (scale < 1.05) reset(true);
+      else {
+        clamp();
+        apply(true);
+      }
+      // 指が 1 本残っていればそのまま移動に切り替える
+      startGesture(true);
+      return;
+    }
+    gesture = null;
+    if (!g || e.type === 'pointercancel') return;
+    box.style.removeProperty('--lb-fade');
+
+    if (g.afterPinch) return;
+    if (scale <= 1 && g.moved) {
+      const dx = e.clientX - g.x;
+      const dy = e.clientY - g.y;
+      if (dy > 120 && dy > Math.abs(dx)) return close();
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) return go(dx < 0 ? 1 : -1);
+      return reset(true);
+    }
+    if (g.moved) return;
+
+    // タップ: ダブルタップで拡大 / 縮小、画像の外をタップで閉じる
+    const now = Date.now();
+    if (lastTap && now - lastTap.time < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+      lastTap = null;
+      if (scale > 1) reset(true);
+      else zoomAt(e.clientX, e.clientY, DOUBLE_TAP_ZOOM, true);
+      return;
+    }
+    lastTap = { time: now, x: e.clientX, y: e.clientY };
+    if (e.target !== img && scale <= 1) {
+      setTimeout(() => {
+        if (lastTap && lastTap.time === now) close();
+      }, 300);
+    }
+  }
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+
+  stage.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      zoomAt(e.clientX, e.clientY, scale * Math.exp(-e.deltaY / 300), false);
+    },
+    { passive: false },
+  );
+  img.addEventListener('dblclick', (e) => e.preventDefault());
+
+  // ---- 開閉 ----
+
+  function onKey(e) {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') go(-1);
+    else if (e.key === 'ArrowRight') go(1);
+  }
+
+  let closed = false;
+  function close(fromHistory) {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    activeLightboxClose = null;
+    box.remove();
+    if (!fromHistory && history.state?.lightbox) {
+      lightboxBackPending = true;
+      history.back();
+    }
+  }
+
+  document.addEventListener('keydown', onKey);
+  if (!lightboxBackPending) history.pushState({ lightbox: true }, '');
+  activeLightboxClose = close;
   document.body.append(box);
+  show(index);
+  closeBtn.focus();
 }
 
 // ---------- モーダル ----------
@@ -625,7 +908,9 @@ function renderImages(attachments) {
   return h(
     'div',
     { class: 'images' },
-    attachments.map((a) => h('img', { src: a.url, alt: a.name, title: a.name, loading: 'lazy', onclick: () => openLightbox(a.url) })),
+    attachments.map((a, i) =>
+      h('img', { src: a.url, alt: a.name, title: a.name, loading: 'lazy', onclick: () => openLightbox(attachments, i) }),
+    ),
   );
 }
 
