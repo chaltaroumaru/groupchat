@@ -748,3 +748,16 @@ table.list th {
     display: none;
   }
 }
+.chip.toggle.locked {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.level-help td {
+  font-size: 0.85em;
+  padding: 5px 6px;
+}
+.my-level {
+  font-size: 0.78em;
+  color: #93a0bf;
+  margin-top: 6px;
+}

@@ -36,18 +36,18 @@ CREATE TABLE IF NOT EXISTS groups (
 CREATE TABLE IF NOT EXISTS group_members (
   group_id   INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
   user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  is_admin   INTEGER NOT NULL DEFAULT 0,
   joined_at  INTEGER NOT NULL,
   PRIMARY KEY (group_id, user_id)
 );
 
 -- グループ内のロール(例: 代表 / 調理班 / 会計 / 宣伝班)
+-- level: read = 閲覧のみ / write = 閲覧・送信 / moderator = チャット作成・アナウンス可 / admin = 管理者
 CREATE TABLE IF NOT EXISTS roles (
-  id            INTEGER PRIMARY KEY,
-  group_id      INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-  name          TEXT    NOT NULL,
-  color         TEXT    NOT NULL DEFAULT '#6b7280',
-  can_announce  INTEGER NOT NULL DEFAULT 0,
+  id        INTEGER PRIMARY KEY,
+  group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  name      TEXT    NOT NULL,
+  color     TEXT    NOT NULL DEFAULT '#6b7280',
+  level     TEXT    NOT NULL DEFAULT 'write' CHECK (level IN ('read', 'write', 'moderator', 'admin')),
   UNIQUE (group_id, name)
 );
 
@@ -130,7 +130,51 @@ function openDatabase(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+const columns = (db, table) =>
+  db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map((c) => c.name);
+
+/** 旧バージョンのデータベースを現在のスキーマに移行する */
+function migrate(db) {
+  transaction(db, () => {
+    // v1: roles.can_announce → roles.level(アナウンス可だったロールは moderator に)
+    if (!columns(db, 'roles').includes('level')) {
+      db.exec(`ALTER TABLE roles ADD COLUMN level TEXT NOT NULL DEFAULT 'write' CHECK (level IN ('read', 'write', 'moderator', 'admin'))`);
+      if (columns(db, 'roles').includes('can_announce')) {
+        db.exec(`UPDATE roles SET level = 'moderator' WHERE can_announce = 1`);
+        db.exec('ALTER TABLE roles DROP COLUMN can_announce');
+      }
+    }
+
+    // v1: group_members.is_admin → 「管理者」ロール(level = admin)の付与
+    if (columns(db, 'group_members').includes('is_admin')) {
+      const admins = db
+        .prepare(
+          `SELECT gm.group_id, gm.user_id FROM group_members gm JOIN groups g ON g.id = gm.group_id
+            WHERE gm.is_admin = 1 AND gm.user_id != g.owner_id`,
+        )
+        .all();
+      const roleIds = new Map();
+      for (const { group_id: gid, user_id: uid } of admins) {
+        if (!roleIds.has(gid)) {
+          let name = '管理者';
+          for (let i = 2; db.prepare('SELECT 1 FROM roles WHERE group_id = ? AND name = ?').get(gid, name); i++) name = `管理者${i}`;
+          const { lastInsertRowid } = db
+            .prepare(`INSERT INTO roles (group_id, name, color, level) VALUES (?, ?, '#ef4444', 'admin')`)
+            .run(gid, name);
+          roleIds.set(gid, Number(lastInsertRowid));
+        }
+        db.prepare('INSERT OR IGNORE INTO member_roles (group_id, user_id, role_id) VALUES (?, ?, ?)').run(gid, uid, roleIds.get(gid));
+      }
+      db.exec('ALTER TABLE group_members DROP COLUMN is_admin');
+    }
+  });
 }
 
 /** fn を 1 トランザクションで実行する */

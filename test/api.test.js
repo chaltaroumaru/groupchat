@@ -43,7 +43,7 @@ test('メール認証が終わるまでログインできない', async () => {
 });
 
 test('グループ作成・招待コードで参加・ロール付与', async () => {
-  const { owner, alice, gid } = await setupGroup('g1');
+  const { owner, alice, bob, gid } = await setupGroup('g1');
   const { body: role } = await owner.post(`/api/groups/${gid}/roles`, { name: '調理班', color: '#ef4444' }).expect(201);
   await owner.patch(`/api/groups/${gid}/members/${alice.id}`, { roleIds: [role.role.id] }).expect(200);
 
@@ -53,9 +53,13 @@ test('グループ作成・招待コードで参加・ロール付与', async ()
 
   // 一般メンバーはロール操作不可
   await alice.post(`/api/groups/${gid}/roles`, { name: '会計' }).expect(403);
-  // 管理者に任命できるのはオーナーのみ
-  await owner.patch(`/api/groups/${gid}/members/${alice.id}`, { isAdmin: true }).expect(200);
-  await alice.patch(`/api/groups/${gid}/members/${owner.id}`, { isAdmin: false }).expect(403);
+  // 管理者ロールを付与できるのはオーナーのみ
+  const adminRole = body.roles.find((r) => r.level === 'admin');
+  await owner.patch(`/api/groups/${gid}/members/${alice.id}`, { roleIds: [role.role.id, adminRole.id] }).expect(200);
+  const { body: asAdmin } = await alice.get(`/api/groups/${gid}`).expect(200);
+  assert.equal(asAdmin.me.isAdmin, true);
+  await alice.patch(`/api/groups/${gid}/members/${bob.id}`, { roleIds: [adminRole.id] }).expect(403);
+  await alice.patch(`/api/groups/${gid}/members/${bob.id}`, { roleIds: [role.role.id] }).expect(200);
   // 非メンバーにはグループが見えない
   const outsider = await srv.user('g1-outsider');
   await outsider.get(`/api/groups/${gid}`).expect(404);
@@ -143,8 +147,8 @@ test('アナウンスをグループ全員に送信し、既読を管理でき�
   const { owner, alice, bob, gid } = await setupGroup('g4');
   await alice.postForm(`/api/groups/${gid}/announcements`, form({ title: 'x' })).expect(403);
 
-  // can_announce 付きロールを持てば一般メンバーも送信可
-  const { body: role } = await owner.post(`/api/groups/${gid}/roles`, { name: '広報', canAnnounce: true }).expect(201);
+  // リーダー権限のロールを持てばアナウンスを送信できる
+  const { body: role } = await owner.post(`/api/groups/${gid}/roles`, { name: '広報', level: 'moderator' }).expect(201);
   await owner.patch(`/api/groups/${gid}/members/${alice.id}`, { roleIds: [role.role.id] }).expect(200);
 
   const f = form({ title: '明日の集合時間', body: '8:00 に正門前集合です' });

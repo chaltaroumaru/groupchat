@@ -5,7 +5,23 @@
  * ============================================================ */
 
 const PERM_LABEL = { write: '閲覧・送信', read: '閲覧のみ', none: '参加させない' };
-const SOURCE_LABEL = { admin: '管理者', override: '個別設定', role: 'ロール', default: 'チャット既定' };
+const SOURCE_LABEL = {
+  admin: '管理者',
+  creator: 'チャット作成者',
+  override: '個別設定',
+  role: 'ロール',
+  default: 'チャット既定',
+  level: 'ロールの権限(閲覧のみ)',
+};
+/** ロールの権限レベル */
+const LEVEL_LABEL = { read: '閲覧のみ', write: '閲覧・送信', moderator: 'リーダー', admin: '管理者' };
+const LEVEL_HELP = {
+  read: 'チャットの閲覧のみ(送信不可)',
+  write: 'チャットの閲覧・送信',
+  moderator: '閲覧・送信 + チャット作成・アナウンス(作成したチャットは管理可)',
+  admin: '全てのチャットの管理・ロール付与・グループ設定の編集',
+};
+const LEVEL_ICON = { read: '👁', write: '💬', moderator: '📣', admin: '⭐' };
 const ROLE_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#8b5cf6', '#ec4899', '#6b7280'];
 
 const state = {
@@ -361,6 +377,14 @@ function renderSidebar() {
           state.groups.map((gr) => h('option', { value: gr.id, selected: g && gr.id === g.group.id }, gr.name)),
         )
       : h('div', {}, 'グループ未参加'),
+    g
+      ? h(
+          'div',
+          { class: 'my-level', title: LEVEL_HELP[g.me.level] },
+          'あなたの権限: ',
+          g.me.isOwner ? '👑 オーナー' : `${LEVEL_ICON[g.me.level]} ${LEVEL_LABEL[g.me.level]}`,
+        )
+      : null,
     h(
       'div',
       { class: 'row' },
@@ -387,7 +411,7 @@ function renderSidebar() {
           'div',
           { class: 'section-title' },
           h('span', {}, 'チャット'),
-          isAdmin() ? h('button', { title: 'チャットを作成', onclick: () => channelModal() }, '＋') : null,
+          g.me.canCreateChannels ? h('button', { title: 'チャットを作成', onclick: () => channelModal() }, '＋') : null,
         ),
         state.channels.map((c) =>
           h(
@@ -500,9 +524,9 @@ function renderChannel() {
       'button',
       { class: 'btn small', title: '参加者', onclick: () => channelMembersModal(ch) },
       '👥',
-      h('span', { class: 'label' }, isAdmin() ? ' 参加者・権限' : ' 参加者'),
+      h('span', { class: 'label' }, ch.canManage ? ' 参加者・権限' : ' 参加者'),
     ),
-    isAdmin()
+    ch.canManage
       ? h(
           'button',
           { class: 'btn small', title: 'チャットを編集', onclick: () => channelModal(ch) },
@@ -534,7 +558,7 @@ function renderChannel() {
 
 function renderMessage(m) {
   const name = m.author?.displayName ?? '退会したユーザー';
-  const canDelete = m.author?.id === state.me.id || isAdmin();
+  const canDelete = m.author?.id === state.me.id || !!currentChannel()?.canManage;
   return h(
     'div',
     { class: 'msg', 'data-id': m.id },
@@ -980,12 +1004,16 @@ function membersTab(g, refresh) {
             g.roles.length === 0 ? h('span', { class: 'muted' }, 'ロールがありません(「ロール管理」で作成)') : null,
             g.roles.map((r) => {
               const on = mem.roleIds.includes(r.id);
+              // 管理者ロールの付与・解除はオーナーのみ
+              const locked = r.level === 'admin' && !me.isOwner;
               return h(
                 'span',
                 {
-                  class: `chip toggle ${on ? 'on' : ''}`,
+                  class: `chip toggle ${on ? 'on' : ''} ${locked ? 'locked' : ''}`,
                   style: on ? { background: r.color } : null,
+                  title: locked ? '管理者ロールの付与・解除はオーナーのみ行えます' : LEVEL_HELP[r.level],
                   onclick: guard(async () => {
+                    if (locked) return toast('管理者ロールの付与・解除はオーナーのみ行えます', 'error');
                     const roleIds = on ? mem.roleIds.filter((x) => x !== r.id) : [...mem.roleIds, r.id];
                     await api('PATCH', `/api/groups/${g.group.id}/members/${mem.id}`, { roleIds });
                     await refresh();
@@ -998,23 +1026,6 @@ function membersTab(g, refresh) {
           )
         : h('div', { class: 'chips' }, mem.roleIds.map(roleById).filter(Boolean).map(roleChip));
       const actions = [];
-      if (me.isOwner && !mem.isOwner) {
-        actions.push(
-          h(
-            'label',
-            { class: 'check', style: { margin: 0 } },
-            h('input', {
-              type: 'checkbox',
-              checked: mem.isAdmin,
-              onchange: guard(async (e) => {
-                await api('PATCH', `/api/groups/${g.group.id}/members/${mem.id}`, { isAdmin: e.target.checked });
-                await refresh();
-              }),
-            }),
-            '管理者',
-          ),
-        );
-      }
       if (isAdmin() && !mem.isOwner && mem.id !== state.me.id && (!mem.isAdmin || me.isOwner)) {
         actions.push(
           h(
@@ -1038,7 +1049,11 @@ function membersTab(g, refresh) {
           'td',
           {},
           h('div', {}, mem.displayName, mem.id === state.me.id ? '(自分)' : ''),
-          h('div', { class: 'muted' }, mem.isOwner ? '👑 オーナー' : mem.isAdmin ? '⭐ 管理者' : 'メンバー'),
+          h(
+            'div',
+            { class: 'muted', title: LEVEL_HELP[mem.level] },
+            mem.isOwner ? '👑 オーナー' : `${LEVEL_ICON[mem.level]} ${LEVEL_LABEL[mem.level]}`,
+          ),
         ),
         h('td', {}, roles),
         h('td', {}, h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end' } }, actions)),
@@ -1057,9 +1072,19 @@ function rolesTab(g, refresh) {
     );
     const swatch = h('span', { class: 'chip', style: { background: color.value, width: '22px', height: '22px', padding: 0 } });
     color.addEventListener('change', () => (swatch.style.background = color.value));
-    const canAnnounce = h('input', { type: 'checkbox', checked: !!r?.canAnnounce });
+    const current = r?.level ?? 'write';
+    // 管理者権限の付与・取り消しはオーナーのみ
+    const ownerOnly = !g.me.isOwner;
+    const level = h(
+      'select',
+      { disabled: ownerOnly && current === 'admin', title: LEVEL_HELP[current] },
+      Object.entries(LEVEL_LABEL).map(([v, label]) =>
+        h('option', { value: v, selected: current === v, disabled: ownerOnly && v === 'admin' && current !== 'admin' }, label),
+      ),
+    );
+    level.addEventListener('change', () => (level.title = LEVEL_HELP[level.value]));
     const save = guard(async () => {
-      const body = { name: name.value, color: color.value, canAnnounce: canAnnounce.checked };
+      const body = { name: name.value, color: color.value, level: level.value };
       if (r) await api('PATCH', `/api/groups/${g.group.id}/roles/${r.id}`, body);
       else await api('POST', `/api/groups/${g.group.id}/roles`, body);
       await refresh();
@@ -1069,7 +1094,7 @@ function rolesTab(g, refresh) {
       {},
       h('td', {}, name),
       h('td', {}, h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, swatch, color)),
-      h('td', {}, h('label', { class: 'check', style: { margin: 0 } }, canAnnounce, 'アナウンス可')),
+      h('td', {}, level),
       h(
         'td',
         { style: { whiteSpace: 'nowrap' } },
@@ -1080,6 +1105,7 @@ function rolesTab(g, refresh) {
               {
                 class: 'btn small danger',
                 style: { marginLeft: '4px' },
+                disabled: ownerOnly && r.level === 'admin',
                 onclick: guard(async () => {
                   if (!confirm(`ロール「${r.name}」を削除しますか?このロールで閲覧していた制限付きチャットは見えなくなります。`)) return;
                   await api('DELETE', `/api/groups/${g.group.id}/roles/${r.id}`);
@@ -1096,9 +1122,15 @@ function rolesTab(g, refresh) {
     'div',
     {},
     h(
+      'table',
+      { class: 'list level-help' },
+      h('tr', {}, h('th', {}, 'ロールの権限'), h('th', {}, 'できること')),
+      Object.keys(LEVEL_LABEL).map((l) => h('tr', {}, h('td', {}, `${LEVEL_ICON[l]} ${LEVEL_LABEL[l]}`), h('td', {}, LEVEL_HELP[l]))),
+    ),
+    h(
       'p',
       { class: 'muted' },
-      'ロールは「メンバー・ロール付与」タブでメンバーに付与できます。制限付きチャットではロールごとに閲覧・送信を許可できます。「アナウンス可」のロールを持つメンバーは全体アナウンスを送信できます。',
+      'ロールは「メンバー・ロール付与」タブでメンバーに付与できます。複数のロールを持つメンバーには最も強い権限が適用され、ロールが無いメンバーは「閲覧・送信」になります。管理者権限の付与・取り消しはオーナーのみ行えます。',
     ),
     h(
       'table',
@@ -1265,7 +1297,11 @@ function channelModal(ch = null) {
   const roleBox = h(
     'div',
     {},
-    h('p', { class: 'muted' }, '選択したロールを持つメンバーだけがこのチャットを閲覧できます(管理者は常に閲覧・送信可)。'),
+    h(
+      'p',
+      { class: 'muted' },
+      '選択したロールを持つメンバーだけがこのチャットを閲覧できます(管理者と作成者は常に閲覧・送信可)。権限が「閲覧のみ」のメンバーは、送信を許可しても閲覧のみになります。',
+    ),
     roleTable,
   );
   const sync = () => {
@@ -1329,7 +1365,7 @@ function channelModal(ch = null) {
 
 async function channelMembersModal(ch) {
   const { members } = await api('GET', `/api/channels/${ch.id}/members`);
-  const admin = isAdmin();
+  const admin = !!ch.canManage;
   const m = modal(
     `${ch.name} の参加者${admin ? '・権限' : ''}`,
     [
@@ -1360,8 +1396,8 @@ async function channelMembersModal(ch) {
               ? h(
                   'td',
                   {},
-                  mem.isAdmin
-                    ? h('span', { class: 'muted' }, '管理者は常に閲覧・送信可')
+                  mem.isAdmin || mem.source === 'creator'
+                    ? h('span', { class: 'muted' }, mem.isAdmin ? '管理者は常に閲覧・送信可' : '作成者は常に閲覧・送信可')
                     : h(
                         'select',
                         {

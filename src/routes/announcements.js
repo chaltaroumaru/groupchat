@@ -33,7 +33,8 @@ module.exports = function announcementRoutes({ db, rt, uploader }) {
   const canPost = (req, _res, next) => {
     const gid = intParam(req.params.gid);
     perm.requireMember(db, gid, req.user.id);
-    if (!perm.canAnnounce(db, gid, req.user.id)) throw new HttpError(403, 'アナウンスを送信する権限がありません');
+    if (!perm.canAnnounce(db, gid, req.user.id))
+      throw new HttpError(403, 'アナウンスを送信できるのはリーダー以上の権限を持つメンバーのみです');
     req.groupId = gid;
     next();
   };
