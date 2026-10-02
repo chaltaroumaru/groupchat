@@ -496,8 +496,20 @@ function renderChannel() {
     menuButton(),
     h('h2', {}, `${ch.restricted ? '🔒' : '#'} ${ch.name}`),
     h('span', { class: 'desc muted' }, ch.description),
-    h('button', { class: 'btn small', onclick: () => channelMembersModal(ch) }, isAdmin() ? '👥 参加者・権限' : '👥 参加者'),
-    isAdmin() ? h('button', { class: 'btn small', onclick: () => channelModal(ch) }, '✏️ 編集') : null,
+    h(
+      'button',
+      { class: 'btn small', title: '参加者', onclick: () => channelMembersModal(ch) },
+      '👥',
+      h('span', { class: 'label' }, isAdmin() ? ' 参加者・権限' : ' 参加者'),
+    ),
+    isAdmin()
+      ? h(
+          'button',
+          { class: 'btn small', title: 'チャットを編集', onclick: () => channelModal(ch) },
+          '✏️',
+          h('span', { class: 'label' }, ' 編集'),
+        )
+      : null,
   );
 
   const list = h('div', { class: 'messages' });
@@ -571,6 +583,40 @@ async function loadOlder() {
   nbox.scrollTop = nbox.scrollHeight - prevHeight;
 }
 
+const MAX_IMAGES = 5;
+const MAX_IMAGE_EDGE = 1600;
+const isTouch = matchMedia('(pointer: coarse)').matches;
+
+/**
+ * モバイル回線での通信量を抑えるため、大きな写真は送信前に縮小・JPEG 圧縮する。
+ * GIF(アニメーションが消えるため)と十分小さい画像はそのまま送る。
+ */
+async function compressImage(file) {
+  if (file.type === 'image/gif') return file;
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return file; // 読み込めない場合はサーバー側の検証に任せる
+  }
+  const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
+  if (scale === 1 && file.size <= 500 * 1024) {
+    bitmap.close();
+    return file;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; // 透過 PNG の背景を白にする
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+  if (!blob || blob.size >= file.size) return file;
+  return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+}
+
 /** 画像選択・プレビュー付きの入力欄 */
 function imagePicker(onChange) {
   const previews = h('div', { class: 'previews' });
@@ -580,11 +626,19 @@ function imagePicker(onChange) {
     multiple: true,
     class: 'hidden',
     onchange: () => {
-      for (const f of input.files) if (pendingFiles.length < 5) pendingFiles.push(f);
-      if (input.files.length + pendingFiles.length > 5) toast('画像は一度に5枚まで添付できます', 'error');
+      const files = [...input.files];
       input.value = '';
-      draw();
+      addFiles(files);
     },
+  });
+  const addFiles = guard(async (files) => {
+    const imgs = files.filter((f) => f.type.startsWith('image/'));
+    if (imgs.length === 0) return;
+    const room = MAX_IMAGES - pendingFiles.length;
+    if (imgs.length > room) toast(`画像は一度に${MAX_IMAGES}枚まで添付できます`, 'error');
+    const compressed = await Promise.all(imgs.slice(0, Math.max(room, 0)).map(compressImage));
+    pendingFiles.push(...compressed.slice(0, MAX_IMAGES - pendingFiles.length));
+    draw();
   });
   function draw() {
     previews.replaceChildren(
@@ -612,7 +666,7 @@ function imagePicker(onChange) {
     onChange?.();
   }
   const button = h('button', { type: 'button', class: 'btn icon', title: '画像を添付', onclick: () => input.click() }, '🖼️');
-  return { previews, input, button, draw };
+  return { previews, input, button, draw, addFiles };
 }
 
 function renderComposer(ch) {
@@ -622,19 +676,17 @@ function renderComposer(ch) {
   const textarea = h('textarea', {
     name: 'body',
     rows: 1,
-    placeholder: `#${ch.name} にメッセージを送信(Enter で送信 / Shift+Enter で改行)`,
+    // スマホでは改行キーで誤送信しないよう、送信ボタンでのみ送信する
+    placeholder: isTouch ? `#${ch.name} にメッセージ` : `#${ch.name} にメッセージを送信(Enter で送信 / Shift+Enter で改行)`,
     onkeydown: (e) => {
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      if (!isTouch && e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         form.requestSubmit();
       }
     },
     onpaste: (e) => {
-      const imgs = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'));
-      if (imgs.length) {
-        pendingFiles.push(...imgs.slice(0, 5 - pendingFiles.length));
-        picker.draw();
-      }
+      const files = [...e.clipboardData.files];
+      if (files.some((f) => f.type.startsWith('image/'))) picker.addFiles(files);
     },
   });
   const picker = imagePicker();
@@ -656,7 +708,7 @@ function renderComposer(ch) {
           picker.draw();
         } finally {
           send.disabled = false;
-          textarea.focus();
+          if (!isTouch) textarea.focus();
         }
       }),
     },
@@ -673,9 +725,7 @@ function renderComposer(ch) {
       ondragover: (e) => e.preventDefault(),
       ondrop: (e) => {
         e.preventDefault();
-        const imgs = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/'));
-        pendingFiles.push(...imgs.slice(0, 5 - pendingFiles.length));
-        picker.draw();
+        picker.addFiles([...e.dataTransfer.files]);
       },
     },
     picker.previews,
@@ -1347,6 +1397,10 @@ function connectSocket() {
   if (socket) socket.disconnect();
   socket = io();
 
+  // 電波が弱い場所での切断・再接続を利用者に知らせる
+  socket.on('disconnect', (reason) => reason !== 'io client disconnect' && setOffline(true));
+  socket.on('connect', () => setOffline(false));
+
   socket.on('message:new', (msg) => {
     const ch = currentChannel();
     if (ch && ch.id === msg.channelId) {
@@ -1499,7 +1553,24 @@ function rerenderAnnouncementList() {
 // 起動
 // ============================================================
 
+function setOffline(offline) {
+  let bar = document.getElementById('offline-bar');
+  if (!offline) return bar?.remove();
+  if (bar) return;
+  bar = h('div', { id: 'offline-bar' }, '📡 接続が切れています(自動で再接続します)');
+  document.body.append(bar);
+}
+
 (async function boot() {
+  // ホーム画面に追加して使えるよう Service Worker を登録(HTTPS か localhost のみ)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  window.addEventListener('offline', () => setOffline(true));
+  window.addEventListener('online', () => {
+    if (!socket || socket.connected) setOffline(false);
+  });
+
   const params = new URLSearchParams(location.search);
   const verified = params.get('verified');
   if (verified !== null) history.replaceState(null, '', '/');

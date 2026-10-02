@@ -4,6 +4,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { HttpError, now, randomToken, str } = require('../util');
 const auth = require('../auth');
+const { rateLimit } = require('../ratelimit');
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -21,10 +22,23 @@ module.exports = function authRoutes({ db, mailer, config }) {
     return url;
   }
 
+  // 携帯回線は多くの端末で IP アドレスを共有するため、IP 単位の上限は緩めにしてメールアドレス単位で絞る
+  const emailKey = (prefix) => (req) => typeof req.body?.email === 'string' && `${prefix}:email:${req.body.email.trim().toLowerCase()}`;
+  const ipKey = (prefix) => (req) => `${prefix}:ip:${req.ip}`;
+  const loginLimit = [
+    rateLimit({ windowMs: 15 * 60 * 1000, max: 10, key: emailKey('login') }),
+    rateLimit({ windowMs: 15 * 60 * 1000, max: 100, key: ipKey('login') }),
+  ];
+  const registerLimit = rateLimit({ windowMs: 60 * 60 * 1000, max: 50, key: ipKey('register') });
+  const resendLimit = [
+    rateLimit({ windowMs: 60 * 60 * 1000, max: 5, key: emailKey('resend') }),
+    rateLimit({ windowMs: 60 * 60 * 1000, max: 30, key: ipKey('resend') }),
+  ];
+
   /** SMTP 未設定の開発環境では、画面から認証できるよう URL を返す */
   const devLink = (url) => (!mailer.configured && config.exposeDevVerifyLink ? { devVerifyUrl: url } : {});
 
-  router.post('/register', async (req, res) => {
+  router.post('/register', registerLimit, async (req, res) => {
     const email = str(req.body.email, 'メールアドレス', { max: 254 }).toLowerCase();
     if (!EMAIL_RE.test(email)) throw new HttpError(400, 'メールアドレスの形式が正しくありません');
     const password = typeof req.body.password === 'string' ? req.body.password : '';
@@ -54,7 +68,7 @@ module.exports = function authRoutes({ db, mailer, config }) {
     res.redirect('/?verified=1');
   });
 
-  router.post('/resend', async (req, res) => {
+  router.post('/resend', resendLimit, async (req, res) => {
     const email = str(req.body.email, 'メールアドレス', { max: 254 }).toLowerCase();
     const user = db.prepare('SELECT id, email, display_name, email_verified FROM users WHERE email = ?').get(email);
     // 登録有無を推測されないよう、結果に関わらず同じ応答を返す
@@ -67,7 +81,7 @@ module.exports = function authRoutes({ db, mailer, config }) {
     res.json({ message: '未認証のアカウントがあれば確認メールを再送しました', ...extra });
   });
 
-  router.post('/login', async (req, res) => {
+  router.post('/login', loginLimit, async (req, res) => {
     const email = str(req.body.email, 'メールアドレス', { max: 254 }).toLowerCase();
     const password = typeof req.body.password === 'string' ? req.body.password : '';
     const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);

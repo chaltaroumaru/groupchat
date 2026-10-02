@@ -248,3 +248,26 @@ function form(fields) {
   for (const [k, v] of Object.entries(fields)) f.append(k, v);
   return f;
 }
+
+test('同じメールアドレスへのログイン試行は回数制限される', async () => {
+  await srv.user('limit');
+  const c = srv.client();
+  // 登録時のログイン 1 回 + 失敗 9 回で上限(10 回)に達する
+  for (let i = 0; i < 9; i++) await c.post('/api/auth/login', { email: 'limit@example.com', password: 'wrong-password' }).expect(401);
+  const res = await c.post('/api/auth/login', { email: 'limit@example.com', password: 'password123' }).expect(429);
+  assert.equal(res.body.code, 'RATE_LIMITED');
+  assert.ok(Number(res.headers.get('retry-after')) > 0);
+  // 他のアカウントには影響しない
+  await srv.user('limit-other');
+});
+
+test('ヘルスチェックとセキュリティヘッダー', async () => {
+  const c = srv.client();
+  const res = await c.get('/healthz').expect(200);
+  assert.deepEqual(res.body, { ok: true });
+  assert.match(res.headers.get('content-security-policy'), /script-src 'self'/);
+  assert.equal(res.headers.get('x-frame-options'), 'DENY');
+  const manifest = await c.get('/manifest.webmanifest').expect(200);
+  assert.equal(JSON.parse(manifest.buffer.toString()).display, 'standalone');
+  await c.get('/sw.js').expect(200);
+});

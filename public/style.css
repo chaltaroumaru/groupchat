@@ -672,3 +672,79 @@ table.list th {
     display: none;
   }
 }
+
+/* ---- スマホ・ホーム画面アプリ対応 ---- */
+@supports (height: 100dvh) {
+  #app {
+    height: 100dvh;
+  }
+}
+.sidebar-head {
+  padding-top: calc(14px + env(safe-area-inset-top));
+}
+.main-head {
+  padding-top: calc(10px + env(safe-area-inset-top));
+}
+.sidebar-foot {
+  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+}
+.composer {
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+}
+.ann-list {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+#offline-bar {
+  position: fixed;
+  top: env(safe-area-inset-top);
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 8px;
+  z-index: 80;
+  background: #b45309;
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  max-width: calc(100vw - 24px);
+  text-align: center;
+}
+@media (max-width: 760px) {
+  /* iOS で入力欄タップ時に画面が拡大されないよう 16px 以上にする */
+  input[type='text'],
+  input[type='email'],
+  input[type='password'],
+  textarea,
+  select {
+    font-size: 16px;
+  }
+  .modal-bg {
+    padding: calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom));
+  }
+  .modal {
+    max-height: 100%;
+  }
+  .composer form {
+    gap: 6px;
+  }
+}
+.main-head h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .main-head {
+    gap: 6px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .main-head h2 {
+    flex: 1;
+  }
+  .main-head .label {
+    display: none;
+  }
+}

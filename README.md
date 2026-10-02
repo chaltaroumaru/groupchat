@@ -35,7 +35,7 @@
 
 ## 使い方
 
-Node.js 22.13 以上が必要です(組み込みの `node:sqlite` を使うため、ネイティブモジュールのビルドは不要です)。
+ローカル(自分の PC)で動かす手順です。スマホから使う場合は下の「スマホから使う」を参照してください。Node.js 22.13 以上が必要です(組み込みの `node:sqlite` を使うため、ネイティブモジュールのビルドは不要です)。
 
 ```bash
 npm install
@@ -50,24 +50,78 @@ npm test           # API テスト
 4. 「ロール管理」でロールを作り、「メンバー・ロール付与」でロールを付与します。
 5. サイドバーの「チャット ＋」から、チャットや制限付きチャットを作成します。
 
+## スマホから使う(Wi-Fi がない会場向け)
+
+会場に Wi-Fi がなくてもスマホのモバイル回線(4G/5G)から使えるように、アプリをインターネット上に公開します。公開したら URL を LINE などでメンバーに共有してください。
+
+### スマホでの使い方
+
+- ブラウザ(iPhone は Safari、Android は Chrome)で URL を開くと、そのまま使えます。
+- **ホーム画面に追加**するとアプリのように全画面で起動できます。
+  - iPhone: Safari の共有ボタン →「ホーム画面に追加」
+  - Android: Chrome のメニュー →「ホーム画面に追加」(または「アプリをインストール」)
+- 写真は送信前にスマホ側で長辺 1600px に縮小・圧縮されるため、モバイル回線のデータ通信量を節約できます(数 MB の写真が数百 KB 程度になります)。
+- 電波が途切れると画面上部に「接続が切れています」と表示され、電波が戻ると自動で再接続して最新のメッセージを読み込みます。
+- スマホでは改行キーでは送信されません(「送信」ボタンで送信します)。
+
+### 公開方法 A: クラウドに置く(おすすめ)
+
+PC を起動しておく必要がなく、学祭期間中ずっと使えます。同梱の `Dockerfile` に対応したサービスならどれでも動きます。ここでは [Railway](https://railway.com) の例を示します(料金プランは各サービスのサイトで確認してください)。
+
+1. Railway にログインし、「New Project」→「Deploy from GitHub repo」でこのリポジトリを選びます(`Dockerfile` が自動で使われます)。
+2. サービスの「Settings」→「Volumes」でボリュームを追加し、マウント先を **`/data`** にします。これを忘れると、再デプロイのたびにアカウントやメッセージが消えます。
+3. 「Settings」→「Networking」→「Generate Domain」で `https://〜.up.railway.app` の URL を発行します(`BASE_URL` は自動で設定されます)。
+4. 「Variables」に確認メール送信用の SMTP 設定を追加します(下記)。設定しないと新規登録したメンバーが認証できません。
+
+> Render の無料プランは永続ディスクが使えず、再起動のたびにデータが消えるため向いていません。Render を使う場合は有料プランで Disk を `/data` にマウントしてください。
+
+#### Gmail で確認メールを送る場合
+
+Google アカウントで 2 段階認証を有効にし、[アプリ パスワード](https://myaccount.google.com/apppasswords)を発行して次のように設定します。
+
+| 変数 | 値 |
+| --- | --- |
+| `SMTP_HOST` | `smtp.gmail.com` |
+| `SMTP_PORT` | `465` |
+| `SMTP_SECURE` | `true` |
+| `SMTP_USER` | 送信に使う Gmail アドレス |
+| `SMTP_PASS` | 発行したアプリ パスワード(16 文字) |
+| `MAIL_FROM` | `学祭グループチャット <送信用アドレス>`(任意) |
+
+### 公開方法 B: 自分の PC から一時的に公開する(無料・お試し向け)
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) を使うと、アカウント登録なしで PC 上のアプリに `https://〜.trycloudflare.com` の URL を付けられます。PC がインターネットにつながっている間だけ使えます(PC は会場ではなく自宅などにあって構いません)。
+
+```bash
+# 1. cloudflared をインストール(macOS: brew install cloudflared / Windows: winget install Cloudflare.cloudflared)
+# 2. 別のターミナルでトンネルを起動し、表示された https://〜.trycloudflare.com を控える
+cloudflared tunnel --url http://localhost:3000
+# 3. その URL を BASE_URL に指定してアプリを起動
+BASE_URL=https://〜.trycloudflare.com npm start
+```
+
+URL はトンネルを起動し直すたびに変わります。また、PC がスリープすると使えなくなります。学祭本番では方法 A をおすすめします。
+
 ## 環境変数
 
 | 変数 | 既定値 | 説明 |
 | --- | --- | --- |
 | `PORT` | `3000` | 待ち受けポート |
-| `BASE_URL` | `http://localhost:PORT` | 確認メールのリンクに使う公開 URL |
+| `BASE_URL` | Railway / Render / Fly.io では自動設定、それ以外は `http://localhost:PORT` | 確認メールのリンクに使う公開 URL |
 | `DATA_DIR` | `./data` | DB と画像の保存先 |
 | `DB_FILE` / `UPLOAD_DIR` | `DATA_DIR` 配下 | 個別に保存先を指定する場合に使います |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_SECURE` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | なし | 確認メールの送信設定 |
 | `NODE_ENV` | なし | `production` にすると開発用の認証リンクを返しません |
-| `COOKIE_SECURE` | `false` | HTTPS で公開するときは `true` にします |
-| `TRUST_PROXY` | `false` | リバースプロキシの内側で動かすときは `true` にします |
+| `COOKIE_SECURE` | `BASE_URL` が `https://` なら `true` | ログイン Cookie に Secure 属性を付けるか |
+| `TRUST_PROXY` | Railway / Render / Fly.io では `true` | リバースプロキシの内側で動かすときは `true` にします |
 
 ## 構成
 
 ```
 src/
   server.js          起動処理(HTTP + Socket.IO)
+  config.js          環境変数の読み込み(公開 URL の自動判定など)
+  ratelimit.js       ログイン試行回数の制限
   app.js             Express アプリの組み立て
   db.js              SQLite スキーマ
   auth.js            セッション(HttpOnly Cookie)
@@ -75,6 +129,7 @@ src/
   uploads.js         画像アップロード(形式・サイズ・中身の検証)
   realtime.js        Socket.IO 配信(閲覧権限のあるユーザーにだけ送信)
   routes/            auth / groups(メンバー・ロール)/ channels(チャット・メッセージ・参加者権限)/ announcements(アナウンス・添付配信)
-public/              フロントエンド(ビルド不要の HTML / CSS / JS)
+public/              フロントエンド(ビルド不要の HTML / CSS / JS、PWA 用の manifest と Service Worker)
+Dockerfile           クラウド公開用(データは /data に保存)
 test/                API テスト(node:test)
 ```

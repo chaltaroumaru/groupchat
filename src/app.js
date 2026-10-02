@@ -20,7 +20,14 @@ function createApp({ db, mailer, rt, config }) {
 
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy ?? false);
+  app.use(securityHeaders);
   app.use(express.json({ limit: '100kb' }));
+
+  // ホスティングサービスの死活監視用
+  app.get('/healthz', (_req, res) => {
+    db.prepare('SELECT 1').get();
+    res.json({ ok: true });
+  });
 
   app.use('/api/auth', require('./routes/auth')(deps));
   const api = express.Router();
@@ -31,7 +38,14 @@ function createApp({ db, mailer, rt, config }) {
   app.use('/api', api);
 
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not Found')));
-  app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(
+    express.static(path.join(__dirname, '..', 'public'), {
+      setHeaders(res, file) {
+        // 更新がすぐ反映されるよう、HTML・JS・CSS・Service Worker は毎回再検証させる
+        if (/\.(html|js|css|webmanifest)$/.test(file)) res.setHeader('Cache-Control', 'no-cache');
+      },
+    }),
+  );
 
   // eslint-disable-next-line no-unused-vars
   app.use((err, _req, res, _next) => {
@@ -43,6 +57,18 @@ function createApp({ db, mailer, rt, config }) {
   });
 
   return app;
+}
+
+function securityHeaders(_req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; " +
+      "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  );
+  next();
 }
 
 module.exports = { createApp };
