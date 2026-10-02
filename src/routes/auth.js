@@ -14,11 +14,20 @@ module.exports = function authRoutes({ db, mailer, config }) {
 
   async function sendVerification(user, token) {
     const url = `${config.baseUrl}/api/auth/verify?token=${encodeURIComponent(token)}`;
-    await mailer.send({
-      to: user.email,
-      subject: '【学祭グループチャット】メールアドレスの確認',
-      text: `${user.display_name} さん\n\n以下のリンクを開いてメールアドレスの認証を完了してください(24時間有効)。\n${url}\n`,
-    });
+    try {
+      await mailer.send({
+        to: user.email,
+        subject: '【学祭グループチャット】メールアドレスの確認',
+        text: `${user.display_name} さん\n\n以下のリンクを開いてメールアドレスの認証を完了してください(24時間有効)。\n${url}\n`,
+      });
+    } catch (err) {
+      console.error('確認メールの送信に失敗しました:', err.message);
+      throw new HttpError(
+        502,
+        '確認メールを送信できませんでした。しばらくしてからログイン画面の「確認メールを再送」をお試しください',
+        'MAIL_FAILED',
+      );
+    }
     return url;
   }
 

@@ -27,6 +27,7 @@ function loadConfig(env = process.env) {
     production,
     baseUrl,
     dbFile: env.DB_FILE || path.join(dataDir, 'groupchat.db'),
+    // 旧バージョンの画像保存先(起動時に DB へ取り込む)
     uploadDir: env.UPLOAD_DIR || path.join(dataDir, 'uploads'),
     // HTTPS で公開している場合は Cookie に Secure を付ける
     secureCookies: env.COOKIE_SECURE !== undefined ? env.COOKIE_SECURE === 'true' : baseUrl.startsWith('https://'),

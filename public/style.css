@@ -761,3 +761,33 @@ table.list th {
   color: #93a0bf;
   margin-top: 6px;
 }
+.invite-box {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.invite-box .qr {
+  width: 168px;
+  height: 168px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+.invite-actions {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.code.small {
+  font-size: 1em;
+  padding: 2px 8px;
+}
+a.btn {
+  text-decoration: none;
+  color: inherit;
+  display: inline-block;
+}

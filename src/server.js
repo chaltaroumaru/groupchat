@@ -6,9 +6,12 @@ const { createApp } = require('./app');
 const { createMailer } = require('./mailer');
 const { createRealtime } = require('./realtime');
 const { loadConfig } = require('./config');
+const { importLegacyFiles } = require('./uploads');
 
 const config = loadConfig();
 const db = openDatabase(config.dbFile);
+const imported = importLegacyFiles(db, config.uploadDir);
+if (imported) console.log(`旧バージョンの画像 ${imported} 件をデータベースに取り込みました`);
 const mailer = createMailer(process.env);
 const rt = createRealtime(db);
 const app = createApp({ db, mailer, rt, config });

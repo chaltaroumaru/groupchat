@@ -1,0 +1,16 @@
+# Litestream: SQLite データベースを S3 互換ストレージ(Backblaze B2 / Cloudflare R2 など)へ常時バックアップする。
+# 値は環境変数から読み込む(scripts/docker-entrypoint.sh を参照)。
+dbs:
+  - path: ${DB_FILE}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: groupchat
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: ${LITESTREAM_REGION}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        force-path-style: true
+        # 変更があれば 1 秒ごとに送信。7 日分の履歴を保持する
+        sync-interval: 1s
+        retention: 168h

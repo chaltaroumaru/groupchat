@@ -11,11 +11,11 @@ const { createUploader } = require('./uploads');
  * @param {import('node:sqlite').DatabaseSync} deps.db
  * @param {{ send: Function, configured: boolean }} deps.mailer
  * @param {{ toUsers: Function, toGroup: Function }} deps.rt
- * @param {{ baseUrl: string, uploadDir: string, secureCookies: boolean, exposeDevVerifyLink: boolean }} deps.config
+ * @param {{ baseUrl: string, secureCookies: boolean, exposeDevVerifyLink: boolean }} deps.config
  */
 function createApp({ db, mailer, rt, config }) {
   const app = express();
-  const uploader = createUploader(path.resolve(config.uploadDir));
+  const uploader = createUploader();
   const deps = { db, mailer, rt, config, uploader };
 
   app.disable('x-powered-by');

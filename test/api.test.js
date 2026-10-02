@@ -2,7 +2,6 @@
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const { io } = require('socket.io-client');
 const { startServer, PNG } = require('./helpers');
 
@@ -200,8 +199,9 @@ test('チャットに画像を添付でき、閲覧権限のない人は取得�
   const fake = new FormData();
   fake.append('images', new Blob(['not an image'], { type: 'image/png' }), 'x.png');
   await alice.postForm(`/api/channels/${cid}/messages`, fake).expect(400);
-  const files = fs.readdirSync(srv.uploadDir);
-  assert.equal(files.length >= 3, true);
+  const countAttachments = () =>
+    srv.db.prepare('SELECT COUNT(*) AS n FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.channel_id = ?').get(cid).n;
+  assert.equal(countAttachments(), 3, '拒否された画像は保存されない');
 
   // 閲覧不可にすると画像も取得できない
   await owner.put(`/api/channels/${cid}/members/${bob.id}`, { permission: 'none' }).expect(200);
@@ -209,15 +209,16 @@ test('チャットに画像を添付でき、閲覧権限のない人は取得�
 
   // 送信権限が無い場合はアップロード自体を受け付けない
   await owner.put(`/api/channels/${cid}/members/${bob.id}`, { permission: 'read' }).expect(200);
-  const before = fs.readdirSync(srv.uploadDir).length;
+  const before = countAttachments();
   const f2 = new FormData();
   f2.append('images', new Blob([PNG], { type: 'image/png' }), 'b.png');
   await bob.postForm(`/api/channels/${cid}/messages`, f2).expect(403);
-  assert.equal(fs.readdirSync(srv.uploadDir).length, before);
+  assert.equal(countAttachments(), before);
 
-  // 削除すると画像ファイルも消える
+  // 削除すると画像も消える
   await alice.del(`/api/messages/${body.message.id}`).expect(200);
   await owner.get(body.message.attachments[0].url).expect(404);
+  assert.equal(countAttachments(), before - 2);
 });
 
 test('新着メッセージは閲覧権限のあるメンバーにだけリアルタイム配信される', async () => {
@@ -274,4 +275,26 @@ test('ヘルスチェックとセキュリティヘッダー', async () => {
   const manifest = await c.get('/manifest.webmanifest').expect(200);
   assert.equal(JSON.parse(manifest.buffer.toString()).display, 'standalone');
   await c.get('/sw.js').expect(200);
+});
+
+test('招待リンクと QR コード', async () => {
+  const { owner, alice, gid } = await setupGroup('inv');
+  const { body } = await owner.get(`/api/groups/${gid}`).expect(200);
+  assert.equal(body.group.inviteUrl, `${srv.baseUrl}/?invite=${body.group.inviteCode}`);
+
+  const qr = await owner.get(`/api/groups/${gid}/invite-qr.svg`).expect(200);
+  assert.equal(qr.headers.get('content-type'), 'image/svg+xml; charset=utf-8');
+  assert.match(qr.buffer.toString(), /^<svg/);
+  await alice.get(`/api/groups/${gid}/invite-qr.svg`).expect(403);
+
+  // 参加済みの人が招待リンクを開き直してもエラーにならない
+  const again = await alice.post('/api/groups/join', { inviteCode: body.group.inviteCode.toLowerCase() }).expect(200);
+  assert.deepEqual(again.body, { id: gid, alreadyMember: true });
+
+  // 再発行すると古い招待リンクは使えなくなる
+  const { body: renewed } = await owner.post(`/api/groups/${gid}/invite-code`).expect(200);
+  assert.notEqual(renewed.inviteCode, body.group.inviteCode);
+  const newcomer = await srv.user('inv-new');
+  await newcomer.post('/api/groups/join', { inviteCode: body.group.inviteCode }).expect(404);
+  await newcomer.post('/api/groups/join', { inviteCode: renewed.inviteCode }).expect(201);
 });

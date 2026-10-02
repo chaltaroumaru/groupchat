@@ -1,8 +1,5 @@
 'use strict';
 
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 const http = require('node:http');
 const { openDatabase } = require('../src/db');
 const { createApp } = require('../src/app');
@@ -12,7 +9,6 @@ const { createRealtime } = require('../src/realtime');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 
 async function startServer() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'groupchat-test-'));
   const db = openDatabase(':memory:');
   const mails = [];
   const mailer = { configured: true, send: async (m) => mails.push(m) };
@@ -24,7 +20,7 @@ async function startServer() {
     db,
     mailer,
     rt,
-    config: { baseUrl, uploadDir: path.join(dir, 'uploads'), secureCookies: false, exposeDevVerifyLink: false },
+    config: { baseUrl, secureCookies: false, exposeDevVerifyLink: false },
   });
   server.on('request', app);
   rt.attach(server);
@@ -33,7 +29,6 @@ async function startServer() {
     baseUrl,
     db,
     mails,
-    uploadDir: path.join(dir, 'uploads'),
     client: () => new Client(baseUrl),
     /** 登録 → メール認証 → ログイン済みのクライアントを返す */
     async user(name) {
@@ -50,7 +45,6 @@ async function startServer() {
     async close() {
       rt.close();
       await new Promise((r) => server.close(r));
-      fs.rmSync(dir, { recursive: true, force: true });
     },
   };
 }

@@ -54,3 +54,24 @@ test('旧バージョンの「管理者」「アナウンス可」をロール�
   openDatabase(file).close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('旧バージョンでディスクに保存した画像を DB に取り込む', () => {
+  const { importLegacyFiles } = require('../src/uploads');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'groupchat-legacy-'));
+  const db = openDatabase(':memory:');
+  db.exec(`INSERT INTO users VALUES (1, 'o@x', 'h', 'o', 1, NULL, NULL, 0);
+    INSERT INTO groups VALUES (1, 'g', '', 'CODE', 1, 0);
+    INSERT INTO channels (id, group_id, name, created_at) VALUES (1, 1, 'c', 0);
+    INSERT INTO messages (id, channel_id, user_id, body, created_at) VALUES (1, 1, 1, '', 0);
+    INSERT INTO attachments (message_id, stored_name, original_name, mime_type, size, created_at)
+      VALUES (1, 'abc.png', 'a.png', 'image/png', 3, 0), (1, 'missing.png', 'b.png', 'image/png', 3, 0);`);
+  fs.writeFileSync(path.join(dir, 'abc.png'), Buffer.from([1, 2, 3]));
+
+  assert.equal(importLegacyFiles(db, dir), 1);
+  const rows = db.prepare('SELECT stored_name, data FROM attachments ORDER BY id').all();
+  assert.deepEqual(Buffer.from(rows[0].data), Buffer.from([1, 2, 3]));
+  assert.equal(rows[1].data, null);
+  assert.equal(fs.existsSync(path.join(dir, 'abc.png')), false, '取り込んだファイルは削除する');
+  assert.equal(importLegacyFiles(db, path.join(dir, 'none')), 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

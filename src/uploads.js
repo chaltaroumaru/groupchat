@@ -9,22 +9,11 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_FILES = 5;
 
 // SVG はスクリプトを含められるため許可しない
-const ALLOWED = {
-  'image/jpeg': '.jpg',
-  'image/png': '.png',
-  'image/gif': '.gif',
-  'image/webp': '.webp',
-};
+const ALLOWED = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 /** ファイル先頭のマジックナンバーで画像形式を確認する */
-function sniffImageType(file) {
-  const fd = fs.openSync(file, 'r');
-  const buf = Buffer.alloc(12);
-  try {
-    fs.readSync(fd, buf, 0, 12, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
+function sniffImageType(buf) {
+  if (buf.length < 12) return null;
   if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
   if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (buf.subarray(0, 4).toString('latin1') === 'GIF8') return 'image/gif';
@@ -32,16 +21,17 @@ function sniffImageType(file) {
   return null;
 }
 
-function createUploader(uploadDir) {
-  fs.mkdirSync(uploadDir, { recursive: true });
+/**
+ * 画像のアップロード。画像は DB(attachments.data)に保存する。
+ * DB ファイル 1 つに全データがまとまるので、無料ホスティングでも外部ストレージへのバックアップ・復元で
+ * データを失わずに済む。
+ */
+function createUploader() {
   const upload = multer({
-    storage: multer.diskStorage({
-      destination: uploadDir,
-      filename: (_req, file, cb) => cb(null, randomToken(18) + (ALLOWED[file.mimetype] || '')),
-    }),
+    storage: multer.memoryStorage(),
     limits: { fileSize: MAX_FILE_SIZE, files: MAX_FILES },
     fileFilter: (_req, file, cb) => {
-      if (!ALLOWED[file.mimetype]) return cb(new HttpError(400, '添付できるのは JPEG / PNG / GIF / WebP 画像のみです'));
+      if (!ALLOWED.includes(file.mimetype)) return cb(new HttpError(400, '添付できるのは JPEG / PNG / GIF / WebP 画像のみです'));
       cb(null, true);
     },
   });
@@ -52,7 +42,6 @@ function createUploader(uploadDir) {
   function imagesMiddleware(req, res, next) {
     images(req, res, (err) => {
       if (err) {
-        cleanup(req.files);
         if (err instanceof multer.MulterError) {
           const msg =
             err.code === 'LIMIT_FILE_SIZE'
@@ -65,36 +54,41 @@ function createUploader(uploadDir) {
         return next(err);
       }
       for (const f of req.files || []) {
-        if (sniffImageType(f.path) !== f.mimetype) {
-          cleanup(req.files);
-          return next(new HttpError(400, '画像ファイルの形式が正しくありません'));
-        }
+        if (sniffImageType(f.buffer) !== f.mimetype) return next(new HttpError(400, '画像ファイルの形式が正しくありません'));
       }
       next();
     });
   }
 
-  function cleanup(files) {
-    for (const f of files || []) fs.rm(f.path, { force: true }, () => {});
-  }
-
   function saveAttachments(db, files, { messageId = null, announcementId = null }) {
     const stmt = db.prepare(
-      `INSERT INTO attachments (message_id, announcement_id, stored_name, original_name, mime_type, size, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO attachments (message_id, announcement_id, stored_name, original_name, mime_type, size, data, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const f of files || []) {
       // multer は latin1 としてファイル名を解釈するため UTF-8 に戻す
       const original = Buffer.from(f.originalname, 'latin1').toString('utf8').slice(0, 255);
-      stmt.run(messageId, announcementId, path.basename(f.path), original, f.mimetype, f.size, now());
+      stmt.run(messageId, announcementId, randomToken(18), original, f.mimetype, f.size, f.buffer, now());
     }
   }
 
-  function removeStored(storedNames) {
-    for (const name of storedNames) fs.rm(path.join(uploadDir, path.basename(name)), { force: true }, () => {});
-  }
-
-  return { imagesMiddleware, cleanup, saveAttachments, removeStored, uploadDir };
+  return { imagesMiddleware, saveAttachments };
 }
 
-module.exports = { createUploader, MAX_FILE_SIZE, MAX_FILES };
+/** 旧バージョンでディスクに保存していた画像を DB に取り込み、元のファイルを削除する */
+function importLegacyFiles(db, uploadDir) {
+  if (!uploadDir || !fs.existsSync(uploadDir)) return 0;
+  const rows = db.prepare('SELECT id, stored_name FROM attachments WHERE data IS NULL').all();
+  const update = db.prepare('UPDATE attachments SET data = ? WHERE id = ?');
+  let count = 0;
+  for (const row of rows) {
+    const file = path.join(uploadDir, path.basename(row.stored_name));
+    if (!fs.existsSync(file)) continue;
+    update.run(fs.readFileSync(file), row.id);
+    fs.rmSync(file, { force: true });
+    count++;
+  }
+  return count;
+}
+
+module.exports = { createUploader, importLegacyFiles, sniffImageType, MAX_FILE_SIZE, MAX_FILES };

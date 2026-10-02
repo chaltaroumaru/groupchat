@@ -10,6 +10,7 @@
 | ロール付与・ロールの権限 | グループごとにロール(例: 代表 / 調理班 / 会計)を作成し、メンバーに付与できます。1人に複数のロールを付けられます。ロールごとに「閲覧のみ / 閲覧・送信 / リーダー / 管理者」の権限を設定できます。 |
 | 複数チャット | 1つのグループに複数のチャットを作成できます(作成時に「全体チャット」が自動で作られます)。 |
 | 指定ロール限定チャット | 🔒 制限付きチャットは、指定したロールのメンバーだけが閲覧できます。ロールごとに「閲覧のみ」か「閲覧・送信」を選べます。 |
+| 招待リンク・QR コード | 管理者は招待リンクを LINE などで送ったり、QR コードを読み取ってもらったりできます。リンクを開いてログイン(初めての人は新規登録)すると自動でグループに参加します。 |
 | アナウンス | グループ全員への連絡を送れます。既読数を表示し、送信者と管理者は未読者を確認できます。新着はリアルタイムで通知されます。 |
 | 参加者の権限編集 | チャットごとにメンバー単位で「閲覧・送信 / 閲覧のみ / 参加させない / 既定に従う」を設定できます。 |
 | 画像の添付 | チャットとアナウンスに画像(JPEG / PNG / GIF / WebP、1枚10MBまで、1回5枚まで)を添付できます。ボタン、ドラッグ&ドロップ、貼り付けのどれでも添付できます。 |
@@ -73,43 +74,73 @@ npm test           # API テスト
 - 電波が途切れると画面上部に「接続が切れています」と表示され、電波が戻ると自動で再接続して最新のメッセージを読み込みます。
 - スマホでは改行キーでは送信されません(「送信」ボタンで送信します)。
 
-### 公開方法 A: クラウドに置く(おすすめ)
+### 公開方法 A: 無料で常時公開する(おすすめ)
 
-PC を起動しておく必要がなく、学祭期間中ずっと使えます。同梱の `Dockerfile` に対応したサービスならどれでも動きます。ここでは [Railway](https://railway.com) の例を示します(料金プランは各サービスのサイトで確認してください)。
+PC を閉じていても 24 時間使えます。次の無料サービスを組み合わせます(料金・無料枠の条件は変わることがあるので、登録時に各サイトで確認してください)。
 
-1. Railway にログインし、「New Project」→「Deploy from GitHub repo」でこのリポジトリを選びます(`Dockerfile` が自動で使われます)。
-2. サービスの「Settings」→「Volumes」でボリュームを追加し、マウント先を **`/data`** にします。これを忘れると、再デプロイのたびにアカウントやメッセージが消えます。
-3. 「Settings」→「Networking」→「Generate Domain」で `https://〜.up.railway.app` の URL を発行します(`BASE_URL` は自動で設定されます)。
-4. 「Variables」に確認メール送信用の SMTP 設定を追加します(下記)。設定しないと新規登録したメンバーが認証できません。
+| 用途 | サービス | 無料プランでの扱い |
+| --- | --- | --- |
+| アプリを動かす | [Render](https://render.com)(Free) | 15 分アクセスが無いとスリープし、ディスクの中身は再起動で消える |
+| データのバックアップ | [Backblaze B2](https://www.backblaze.com/cloud-storage)(10 GB まで無料) | 起動時に自動で復元し、実行中は 1 秒ごとに差分を保存する |
+| 確認メール | [Brevo](https://www.brevo.com)(1 日 300 通まで無料) | HTTP 経由で送るので、SMTP が使えない環境でも届く |
+| スリープ防止 | [cron-job.org](https://cron-job.org)(無料) | 10 分ごとにアクセスしてスリープさせない |
 
-> Render の無料プランは永続ディスクが使えず、再起動のたびにデータが消えるため向いていません。Render を使う場合は有料プランで Disk を `/data` にマウントしてください。
+画像を含む全データは 1 つのデータベースファイルにまとまっており、[Litestream](https://litestream.io) が B2 へ常時バックアップします。Render が再起動してもバックアップから復元されるので、アカウントやメッセージは消えません。
 
-#### Gmail で確認メールを送る場合
+#### 1. Backblaze B2(バックアップ先)
 
-Google アカウントで 2 段階認証を有効にし、[アプリ パスワード](https://myaccount.google.com/apppasswords)を発行して次のように設定します。
+1. アカウントを作成し、「Buckets」→「Create a Bucket」でバケットを作ります(名前は世界で一意、Files は **Private**)。
+2. 作成したバケットに表示される **Endpoint**(例: `s3.us-west-004.backblazeb2.com`)を控えます。
+3. 「Application Keys」→「Add a New Application Key」で、そのバケットだけにアクセスできる Read and Write のキーを作り、**keyID** と **applicationKey** を控えます(applicationKey はこの画面でしか表示されません)。
+
+#### 2. Brevo(確認メール)
+
+1. アカウントを作成し、「Senders, Domains & Dedicated IPs」→「Senders」で送信元にする自分のメールアドレスを追加して認証します。
+2. 「SMTP & API」→「API Keys」で API キーを作成して控えます。
+
+#### 3. Render(アプリ本体)
+
+1. GitHub アカウントで Render にログインし、「New」→「Blueprint」でこのリポジトリを選びます(同梱の `render.yaml` が読み込まれ、無料プランの Web サービスが作られます)。コードが既定ブランチ以外にある場合は、そのブランチを選んでください。
+2. 次の環境変数を入力して「Apply」(デプロイ)します。
 
 | 変数 | 値 |
 | --- | --- |
-| `SMTP_HOST` | `smtp.gmail.com` |
-| `SMTP_PORT` | `465` |
-| `SMTP_SECURE` | `true` |
-| `SMTP_USER` | 送信に使う Gmail アドレス |
-| `SMTP_PASS` | 発行したアプリ パスワード(16 文字) |
-| `MAIL_FROM` | `学祭グループチャット <送信用アドレス>`(任意) |
+| `LITESTREAM_BUCKET` | B2 のバケット名 |
+| `LITESTREAM_ENDPOINT` | `https://` + B2 の Endpoint(例: `https://s3.us-west-004.backblazeb2.com`) |
+| `LITESTREAM_REGION` | Endpoint の `s3.` と `.backblazeb2.com` の間(例: `us-west-004`) |
+| `LITESTREAM_ACCESS_KEY_ID` | B2 の keyID |
+| `LITESTREAM_SECRET_ACCESS_KEY` | B2 の applicationKey |
+| `BREVO_API_KEY` | Brevo の API キー |
+| `MAIL_FROM` | `学祭グループチャット <Brevo で認証したアドレス>` |
 
-### 公開方法 B: 自分の PC から一時的に公開する(無料・お試し向け)
+3. デプロイが終わると `https://gakusai-chat-xxxx.onrender.com` のような URL が発行されます(確認メールのリンクにも自動で使われます)。
 
-[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) を使うと、アカウント登録なしで PC 上のアプリに `https://〜.trycloudflare.com` の URL を付けられます。PC がインターネットにつながっている間だけ使えます(PC は会場ではなく自宅などにあって構いません)。
+#### 4. cron-job.org(スリープ防止)
+
+アカウントを作成し、「Create cronjob」で URL に `https://<発行された URL>/healthz`、実行間隔に「Every 10 minutes」を設定します。これで Render がスリープしなくなります(Render の無料枠は月 750 時間で、1 サービスを常時動かせる時間です)。
+
+#### 5. メンバーを招待する
+
+1. 発行された URL を開き、代表者がアカウントを作成してグループを作ります。
+2. 「グループ設定 → グループ情報・招待」の **招待リンクを LINE で送る**か、**QR コード**をスマホで読み取ってもらいます。
+3. メンバーはリンクを開いて新規登録 → 確認メールのリンクを開く → ログインすると、自動でグループに参加します。
+
+> もしスリープ中にアクセスされた場合は、最初の表示に 1 分ほどかかります。データは消えません。
+
+### 公開方法 B: 有料のクラウドに置く
+
+永続ディスクが使えるサービス(Railway など)では、ディスクを `/data` にマウントすればバックアップ設定は不要です(`LITESTREAM_*` を設定しなければ Litestream は使われません)。同梱の `Dockerfile` でそのまま動きます。
+
+確認メールは Brevo の代わりに SMTP(Gmail など)でも送れます。Gmail の場合は 2 段階認証を有効にして[アプリ パスワード](https://myaccount.google.com/apppasswords)を発行し、`SMTP_HOST=smtp.gmail.com` `SMTP_PORT=465` `SMTP_SECURE=true` `SMTP_USER=<Gmail アドレス>` `SMTP_PASS=<アプリ パスワード>` を設定します。
+
+### 公開方法 C: 自分の PC から一時的に公開する(お試し向け)
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) を使うと、PC 上のアプリに `https://〜.trycloudflare.com` の URL を付けられます。PC が起動してインターネットにつながっている間だけ使えます。
 
 ```bash
-# 1. cloudflared をインストール(macOS: brew install cloudflared / Windows: winget install Cloudflare.cloudflared)
-# 2. 別のターミナルでトンネルを起動し、表示された https://〜.trycloudflare.com を控える
-cloudflared tunnel --url http://localhost:3000
-# 3. その URL を BASE_URL に指定してアプリを起動
-BASE_URL=https://〜.trycloudflare.com npm start
+cloudflared tunnel --url http://localhost:3000        # 表示された https://〜.trycloudflare.com を控える
+BASE_URL=https://〜.trycloudflare.com npm start       # 別のターミナルで起動
 ```
-
-URL はトンネルを起動し直すたびに変わります。また、PC がスリープすると使えなくなります。学祭本番では方法 A をおすすめします。
 
 ## 環境変数
 
@@ -117,9 +148,12 @@ URL はトンネルを起動し直すたびに変わります。また、PC が�
 | --- | --- | --- |
 | `PORT` | `3000` | 待ち受けポート |
 | `BASE_URL` | Railway / Render / Fly.io では自動設定、それ以外は `http://localhost:PORT` | 確認メールのリンクに使う公開 URL |
-| `DATA_DIR` | `./data` | DB と画像の保存先 |
-| `DB_FILE` / `UPLOAD_DIR` | `DATA_DIR` 配下 | 個別に保存先を指定する場合に使います |
-| `SMTP_HOST` `SMTP_PORT` `SMTP_SECURE` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | なし | 確認メールの送信設定 |
+| `DATA_DIR` | `./data` | データベース(画像を含む全データ)の保存先 |
+| `DB_FILE` | `DATA_DIR/groupchat.db` | データベースファイルを個別に指定する場合に使います |
+| `UPLOAD_DIR` | `DATA_DIR/uploads` | 旧バージョンの画像保存先。起動時にデータベースへ取り込みます |
+| `LITESTREAM_BUCKET` `LITESTREAM_ENDPOINT` `LITESTREAM_REGION` `LITESTREAM_ACCESS_KEY_ID` `LITESTREAM_SECRET_ACCESS_KEY` | なし | Docker で動かすときのバックアップ先(S3 互換ストレージ)。設定すると起動時に復元し、常時バックアップします |
+| `BREVO_API_KEY` `MAIL_FROM` | なし | Brevo の HTTP API で確認メールを送る設定(SMTP より優先) |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_SECURE` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | なし | SMTP で確認メールを送る設定 |
 | `NODE_ENV` | なし | `production` にすると開発用の認証リンクを返しません |
 | `COOKIE_SECURE` | `BASE_URL` が `https://` なら `true` | ログイン Cookie に Secure 属性を付けるか |
 | `TRUST_PROXY` | Railway / Render / Fly.io では `true` | リバースプロキシの内側で動かすときは `true` にします |
@@ -135,10 +169,14 @@ src/
   db.js              SQLite スキーマ
   auth.js            セッション(HttpOnly Cookie)
   permissions.js     グループ・チャット権限の判定
-  uploads.js         画像アップロード(形式・サイズ・中身の検証)
+  uploads.js         画像アップロード(形式・サイズ・中身の検証、DB への保存)
+  mailer.js          確認メールの送信(Brevo API / SMTP / コンソール)
   realtime.js        Socket.IO 配信(閲覧権限のあるユーザーにだけ送信)
   routes/            auth / groups(メンバー・ロール)/ channels(チャット・メッセージ・参加者権限)/ announcements(アナウンス・添付配信)
 public/              フロントエンド(ビルド不要の HTML / CSS / JS、PWA 用の manifest と Service Worker)
-Dockerfile           クラウド公開用(データは /data に保存)
+Dockerfile           クラウド公開用(データは /data に保存、Litestream 同梱)
+render.yaml          Render の無料プランで公開するための設定
+litestream.yml       データベースの常時バックアップ設定
+scripts/             コンテナ起動スクリプト(バックアップからの復元 → 起動)
 test/                API テスト(node:test)
 ```

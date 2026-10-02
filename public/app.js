@@ -259,6 +259,7 @@ function renderAuth(tab = 'login', notice = null) {
         h('h1', {}, '🎪 学祭グループチャット'),
         h('div', { class: 'muted' }, '出店メンバーの連絡をひとまとめに'),
         tabs,
+        inviteNotice(),
         notice,
         tab === 'login' ? loginForm : registerForm,
         err,
@@ -295,9 +296,47 @@ function resendLink(email) {
 // メイン画面
 // ============================================================
 
+// ---------- 招待リンク(/?invite=コード) ----------
+
+function storage(fn) {
+  try {
+    return fn(localStorage);
+  } catch {
+    return null; // プライベートブラウズなどで使えない場合
+  }
+}
+const pendingInvite = {
+  get: () => storage((s) => s.getItem('pendingInvite')),
+  set: (code) => storage((s) => s.setItem('pendingInvite', code)),
+  clear: () => storage((s) => s.removeItem('pendingInvite')),
+};
+
+/** 招待リンクから来た場合、ログイン後にそのグループへ参加する。参加したグループの ID を返す */
+async function acceptPendingInvite() {
+  const code = pendingInvite.get();
+  if (!code) return null;
+  try {
+    const res = await api('POST', '/api/groups/join', { inviteCode: code });
+    pendingInvite.clear();
+    toast(res.alreadyMember ? '参加済みのグループを開きました' : 'グループに参加しました');
+    return res.id;
+  } catch (err) {
+    if (err.status === 404) pendingInvite.clear();
+    toast(err.status === 404 ? '招待リンクが無効です。最新のリンクを代表者に確認してください' : err.message, 'error');
+    return null;
+  }
+}
+
+function inviteNotice() {
+  if (!pendingInvite.get()) return null;
+  return h('div', { class: 'notice' }, '🎟 グループへの招待を受け取りました。ログイン(初めての人は新規登録)すると自動で参加します。');
+}
+
 async function startMain() {
   connectSocket();
+  const invitedGroup = await acceptPendingInvite();
   await loadGroups();
+  if (invitedGroup) return selectGroup(invitedGroup);
   const saved = Number(localStorage.getItem('groupId'));
   const gid = state.groups.find((g) => g.id === saved)?.id ?? state.groups[0]?.id;
   if (gid) await selectGroup(gid);
@@ -1168,34 +1207,74 @@ function infoTab(g, m, refresh) {
         },
         '保存',
       ),
-      h('h4', {}, '招待コード'),
-      h('p', { class: 'muted' }, 'このコードをメンバーに共有すると、グループに参加できます。'),
+      h('h4', {}, 'メンバーを招待する'),
+      h(
+        'p',
+        { class: 'muted' },
+        '招待リンクを LINE などで送るか、QR コードをスマホで読み取ってもらいます。開いてログイン(初めての人は新規登録)すると自動でグループに参加します。',
+      ),
       h(
         'div',
-        { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
-        h('span', { class: 'code' }, g.group.inviteCode),
+        { class: 'invite-box' },
+        h('img', { class: 'qr', src: `/api/groups/${g.group.id}/invite-qr.svg?code=${g.group.inviteCode}`, alt: '招待用 QR コード' }),
         h(
-          'button',
-          {
-            class: 'btn small',
-            onclick: guard(async () => {
-              await navigator.clipboard.writeText(g.group.inviteCode);
-              toast('コピーしました');
-            }),
-          },
-          'コピー',
-        ),
-        h(
-          'button',
-          {
-            class: 'btn small',
-            onclick: guard(async () => {
-              if (!confirm('招待コードを再発行しますか?古いコードは使えなくなります。')) return;
-              await api('POST', `/api/groups/${g.group.id}/invite-code`);
-              await refresh();
-            }),
-          },
-          '再発行',
+          'div',
+          { class: 'invite-actions' },
+          h('input', {
+            type: 'text',
+            readonly: true,
+            value: g.group.inviteUrl,
+            onfocus: (e) => e.target.select(),
+            'aria-label': '招待リンク',
+          }),
+          h(
+            'div',
+            { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+            h(
+              'button',
+              {
+                class: 'btn small primary',
+                onclick: guard(async () => {
+                  await navigator.clipboard.writeText(inviteMessage(g));
+                  toast('招待メッセージをコピーしました');
+                }),
+              },
+              'リンクをコピー',
+            ),
+            h(
+              'a',
+              {
+                class: 'btn small',
+                href: `https://line.me/R/share?text=${encodeURIComponent(inviteMessage(g))}`,
+                target: '_blank',
+                rel: 'noopener',
+              },
+              'LINE で送る',
+            ),
+            navigator.share
+              ? h(
+                  'button',
+                  {
+                    class: 'btn small',
+                    onclick: () => navigator.share({ title: g.group.name, text: inviteMessage(g) }).catch(() => {}),
+                  },
+                  'その他で共有',
+                )
+              : null,
+          ),
+          h('div', { class: 'muted' }, '招待コード(手入力用): ', h('span', { class: 'code small' }, g.group.inviteCode)),
+          h(
+            'button',
+            {
+              class: 'btn small',
+              onclick: guard(async () => {
+                if (!confirm('招待リンクを再発行しますか?古いリンク・QR コード・招待コードは使えなくなります。')) return;
+                await api('POST', `/api/groups/${g.group.id}/invite-code`);
+                await refresh();
+              }),
+            },
+            '招待リンクを再発行',
+          ),
         ),
       ),
     );
@@ -1243,6 +1322,10 @@ function infoTab(g, m, refresh) {
     );
   }
   return box;
+}
+
+function inviteMessage(g) {
+  return `「${g.group.name}」のグループチャットに招待されました。\n下のリンクを開いて登録・ログインすると参加できます。\n${g.group.inviteUrl}`;
 }
 
 async function afterLeaving() {
@@ -1609,7 +1692,9 @@ function setOffline(offline) {
 
   const params = new URLSearchParams(location.search);
   const verified = params.get('verified');
-  if (verified !== null) history.replaceState(null, '', '/');
+  const invite = params.get('invite');
+  if (invite) pendingInvite.set(invite);
+  if (verified !== null || invite) history.replaceState(null, '', '/');
 
   // スマホ表示でサイドバー外をタップしたら閉じる
   document.addEventListener('click', (e) => {

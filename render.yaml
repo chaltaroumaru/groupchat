@@ -1,0 +1,26 @@
+# Render の Blueprint(https://render.com/docs/blueprint-spec)
+# 「New → Blueprint」でこのリポジトリを選ぶと、無料プランの Web サービスとして作成される。
+services:
+  - type: web
+    name: gakusai-chat
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    envVars:
+      # ---- バックアップ先(Backblaze B2 / Cloudflare R2 などの S3 互換ストレージ)----
+      - key: LITESTREAM_BUCKET
+        sync: false
+      - key: LITESTREAM_ENDPOINT
+        sync: false
+      - key: LITESTREAM_REGION
+        sync: false
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false
+      # ---- 確認メール(Brevo の API キーと送信元アドレス)----
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false

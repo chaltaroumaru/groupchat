@@ -35,3 +35,25 @@ test('BASE_URL・COOKIE_SECURE・TRUST_PROXY の明示指定が優先される',
   assert.equal(c.trustProxy, false);
   assert.equal(c.exposeDevVerifyLink, false);
 });
+
+test('Brevo の HTTP API で確認メールを送れる', async () => {
+  const { createMailer, parseAddress } = require('../src/mailer');
+  assert.deepEqual(parseAddress('学祭チャット <noreply@example.com>'), { name: '学祭チャット', email: 'noreply@example.com' });
+  const calls = [];
+  const fakeFetch = async (url, opts) => {
+    calls.push({ url, opts });
+    return { ok: true };
+  };
+  const mailer = createMailer({ BREVO_API_KEY: 'key', MAIL_FROM: 'me@example.com', SMTP_HOST: 'ignored' }, fakeFetch);
+  assert.equal(mailer.configured, true);
+  await mailer.send({ to: 'a@example.com', subject: '件名', text: '本文' });
+  assert.equal(calls[0].url, 'https://api.brevo.com/v3/smtp/email');
+  assert.equal(calls[0].opts.headers['api-key'], 'key');
+  assert.deepEqual(JSON.parse(calls[0].opts.body), {
+    sender: { email: 'me@example.com', name: '学祭グループチャット' },
+    to: [{ email: 'a@example.com' }],
+    subject: '件名',
+    textContent: '本文',
+  });
+  assert.throws(() => createMailer({ BREVO_API_KEY: 'key' }), /MAIL_FROM/);
+});

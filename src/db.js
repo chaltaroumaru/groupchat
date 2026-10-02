@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS attachments (
   original_name    TEXT    NOT NULL,
   mime_type        TEXT    NOT NULL,
   size             INTEGER NOT NULL,
+  -- 画像本体。DB ファイル 1 つにまとめておくとバックアップ・復元が簡単になる
+  data             BLOB,
   created_at       INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
@@ -129,6 +131,11 @@ CREATE INDEX IF NOT EXISTS idx_attachments_announcement ON attachments(announcem
 function openDatabase(file) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
+  if (file !== ':memory:') {
+    // WAL: 書き込み中も読み取りでき、Litestream によるバックアップにも必要
+    db.exec('PRAGMA journal_mode = WAL');
+    db.exec('PRAGMA busy_timeout = 5000');
+  }
   db.exec(SCHEMA);
   migrate(db);
   return db;
@@ -150,6 +157,11 @@ function migrate(db) {
         db.exec(`UPDATE roles SET level = 'moderator' WHERE can_announce = 1`);
         db.exec('ALTER TABLE roles DROP COLUMN can_announce');
       }
+    }
+
+    // v2: 画像をファイルではなく DB に保存する(既存ファイルは importLegacyFiles で取り込む)
+    if (!columns(db, 'attachments').includes('data')) {
+      db.exec('ALTER TABLE attachments ADD COLUMN data BLOB');
     }
 
     // v1: group_members.is_admin → 「管理者」ロール(level = admin)の付与

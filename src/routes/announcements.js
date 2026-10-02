@@ -1,7 +1,6 @@
 'use strict';
 
 const express = require('express');
-const path = require('node:path');
 const { transaction } = require('../db');
 const { HttpError, now, str, intParam } = require('../util');
 const perm = require('../permissions');
@@ -41,24 +40,18 @@ module.exports = function announcementRoutes({ db, rt, uploader }) {
 
   router.post('/groups/:gid/announcements', canPost, uploader.imagesMiddleware, (req, res) => {
     const files = req.files || [];
-    let id;
-    try {
-      const title = str(req.body?.title, 'タイトル', { min: 1, max: 100 });
-      const body = str(req.body?.body ?? '', '本文', { max: 4000 });
-      id = transaction(db, () => {
-        const { lastInsertRowid } = db
-          .prepare('INSERT INTO announcements (group_id, user_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
-          .run(req.groupId, req.user.id, title, body, now());
-        const aid = Number(lastInsertRowid);
-        // 送信者本人は既読扱い
-        db.prepare('INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?, ?, ?)').run(aid, req.user.id, now());
-        uploader.saveAttachments(db, files, { announcementId: aid });
-        return aid;
-      });
-    } catch (err) {
-      uploader.cleanup(files);
-      throw err;
-    }
+    const title = str(req.body?.title, 'タイトル', { min: 1, max: 100 });
+    const body = str(req.body?.body ?? '', '本文', { max: 4000 });
+    const id = transaction(db, () => {
+      const { lastInsertRowid } = db
+        .prepare('INSERT INTO announcements (group_id, user_id, title, body, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(req.groupId, req.user.id, title, body, now());
+      const aid = Number(lastInsertRowid);
+      // 送信者本人は既読扱い
+      db.prepare('INSERT INTO announcement_reads (announcement_id, user_id, read_at) VALUES (?, ?, ?)').run(aid, req.user.id, now());
+      uploader.saveAttachments(db, files, { announcementId: aid });
+      return aid;
+    });
     const [announcement] = serializeAnnouncements(db, [getAnnouncement(id, req.user.id)]);
     rt.toGroup(req.groupId, 'announcement:new', { ...announcement, readByMe: false });
     res.status(201).json({ announcement });
@@ -98,9 +91,7 @@ module.exports = function announcementRoutes({ db, rt, uploader }) {
     if (a.user_id !== req.user.id && !perm.getMembership(db, a.group_id, req.user.id).isAdmin) {
       throw new HttpError(403, '削除できるのは送信者と管理者のみです');
     }
-    const files = db.prepare('SELECT stored_name FROM attachments WHERE announcement_id = ?').all(a.id);
     db.prepare('DELETE FROM announcements WHERE id = ?').run(a.id);
-    uploader.removeStored(files.map((f) => f.stored_name));
     rt.toGroup(a.group_id, 'announcement:deleted', { id: a.id, groupId: a.group_id });
     res.json({ ok: true });
   });
@@ -122,7 +113,8 @@ module.exports = function announcementRoutes({ db, rt, uploader }) {
     res.setHeader('Cache-Control', 'private, max-age=86400');
     const disposition = req.query.download ? 'attachment' : 'inline';
     res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(att.original_name)}`);
-    res.sendFile(path.join(uploader.uploadDir, path.basename(att.stored_name)), { headers: { 'Content-Type': att.mime_type } });
+    if (!att.data) throw new HttpError(404, 'ファイルが見つかりません');
+    res.end(Buffer.from(att.data));
   });
 
   return router;

@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const QRCode = require('qrcode');
 const { transaction } = require('../db');
 const { HttpError, now, inviteCode, str, intParam } = require('../util');
 const perm = require('../permissions');
@@ -69,8 +70,11 @@ function addMember(db, groupId, userId) {
   db.prepare('INSERT INTO group_members (group_id, user_id, joined_at) VALUES (?, ?, ?)').run(groupId, userId, now());
 }
 
-module.exports = function groupRoutes({ db, rt }) {
+module.exports = function groupRoutes({ db, rt, config }) {
   const router = express.Router();
+
+  /** 開くとそのままグループに参加できる招待リンク */
+  const inviteUrl = (code) => `${config.baseUrl}/?invite=${encodeURIComponent(code)}`;
 
   /** グループ構成(メンバー・ロール・権限)が変わったことを全員に通知する */
   const changed = (groupId) => rt.toGroup(groupId, 'group:changed', { groupId });
@@ -117,7 +121,8 @@ module.exports = function groupRoutes({ db, rt }) {
     const code = str(req.body.inviteCode, '招待コード', { min: 1, max: 32 }).toUpperCase();
     const group = db.prepare('SELECT id FROM groups WHERE invite_code = ?').get(code);
     if (!group) throw new HttpError(404, '招待コードが正しくありません');
-    if (perm.getMembership(db, group.id, req.user.id)) throw new HttpError(409, '既にこのグループに参加しています');
+    // 招待リンクを何度開いても困らないよう、参加済みならそのグループを返す
+    if (perm.getMembership(db, group.id, req.user.id)) return res.json({ id: group.id, alreadyMember: true });
     addMember(db, group.id, req.user.id);
     changed(group.id);
     res.status(201).json({ id: group.id });
@@ -134,6 +139,7 @@ module.exports = function groupRoutes({ db, rt }) {
         description: g.description,
         // 招待コードは管理者にのみ表示
         inviteCode: me.isAdmin ? g.invite_code : undefined,
+        inviteUrl: me.isAdmin ? inviteUrl(g.invite_code) : undefined,
       },
       me,
       roles: rolesOf(db, gid),
@@ -166,7 +172,18 @@ module.exports = function groupRoutes({ db, rt }) {
     perm.requireAdmin(db, gid, req.user.id);
     const code = createInviteCode(db);
     db.prepare('UPDATE groups SET invite_code = ? WHERE id = ?').run(code, gid);
-    res.json({ inviteCode: code });
+    res.json({ inviteCode: code, inviteUrl: inviteUrl(code) });
+  });
+
+  /** 招待リンクの QR コード(SVG)。対面でメンバーに読み取ってもらう用 */
+  router.get('/:gid/invite-qr.svg', async (req, res) => {
+    const gid = intParam(req.params.gid);
+    perm.requireAdmin(db, gid, req.user.id);
+    const { invite_code: code } = db.prepare('SELECT invite_code FROM groups WHERE id = ?').get(gid);
+    const svg = await QRCode.toString(inviteUrl(code), { type: 'svg', margin: 2, errorCorrectionLevel: 'M' });
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.send(svg);
   });
 
   // ---- メンバー ----

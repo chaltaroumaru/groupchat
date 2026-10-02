@@ -129,11 +129,7 @@ module.exports = function channelRoutes({ db, rt, uploader }) {
 
   router.delete('/channels/:cid', (req, res) => {
     const { channel: ch } = perm.requireChannelManager(db, intParam(req.params.cid), req.user.id);
-    const files = db
-      .prepare('SELECT a.stored_name FROM attachments a JOIN messages m ON m.id = a.message_id WHERE m.channel_id = ?')
-      .all(ch.id);
     db.prepare('DELETE FROM channels WHERE id = ?').run(ch.id);
-    uploader.removeStored(files.map((f) => f.stored_name));
     channelsChanged(ch.group_id);
     res.json({ ok: true });
   });
@@ -214,22 +210,16 @@ module.exports = function channelRoutes({ db, rt, uploader }) {
   router.post('/channels/:cid/messages', canSend, uploader.imagesMiddleware, (req, res) => {
     const { channel } = req.channelCtx;
     const files = req.files || [];
-    let id;
-    try {
-      const body = str(req.body?.body ?? '', 'メッセージ', { max: 4000 });
-      if (!body && files.length === 0) throw new HttpError(400, 'メッセージか画像を入力してください');
-      id = transaction(db, () => {
-        const { lastInsertRowid } = db
-          .prepare('INSERT INTO messages (channel_id, user_id, body, created_at) VALUES (?, ?, ?, ?)')
-          .run(channel.id, req.user.id, body, now());
-        const mid = Number(lastInsertRowid);
-        uploader.saveAttachments(db, files, { messageId: mid });
-        return mid;
-      });
-    } catch (err) {
-      uploader.cleanup(files);
-      throw err;
-    }
+    const body = str(req.body?.body ?? '', 'メッセージ', { max: 4000 });
+    if (!body && files.length === 0) throw new HttpError(400, 'メッセージか画像を入力してください');
+    const id = transaction(db, () => {
+      const { lastInsertRowid } = db
+        .prepare('INSERT INTO messages (channel_id, user_id, body, created_at) VALUES (?, ?, ?, ?)')
+        .run(channel.id, req.user.id, body, now());
+      const mid = Number(lastInsertRowid);
+      uploader.saveAttachments(db, files, { messageId: mid });
+      return mid;
+    });
     const [message] = serializeMessages(db, [db.prepare(`${MESSAGE_SELECT} WHERE m.id = ?`).get(id)]);
     rt.toUsers(perm.channelReaderIds(db, channel), 'message:new', message);
     res.status(201).json({ message });
@@ -242,9 +232,7 @@ module.exports = function channelRoutes({ db, rt, uploader }) {
     if (msg.user_id !== req.user.id && !perm.canManageChannel(membership, channel, req.user.id)) {
       throw new HttpError(403, '自分のメッセージのみ削除できます');
     }
-    const files = db.prepare('SELECT stored_name FROM attachments WHERE message_id = ?').all(msg.id);
     db.prepare('DELETE FROM messages WHERE id = ?').run(msg.id);
-    uploader.removeStored(files.map((f) => f.stored_name));
     rt.toUsers(perm.channelReaderIds(db, channel), 'message:deleted', { id: msg.id, channelId: channel.id });
     res.json({ ok: true });
   });
