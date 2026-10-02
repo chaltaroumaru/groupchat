@@ -36,6 +36,7 @@ const state = {
   memberCount: 0,
   unreadChannels: new Set(),
   sidebarOpen: false,
+  annBannerOpen: false, // チャット上部のアナウンスを全文表示しているか
 };
 let socket = null;
 let pendingFiles = [];
@@ -875,7 +876,52 @@ function renderChannel() {
     list.append(renderMessage(m));
   }
 
-  return h('main', { class: 'main' }, head, list, renderComposer(ch));
+  return h('main', { class: 'main' }, head, renderAnnBanner(), list, renderComposer(ch));
+}
+
+/** チャット画面の上部に常に表示するアナウンス(未読があれば最新の未読、なければ最新のもの) */
+function renderAnnBanner() {
+  const a = state.announcements.find((x) => !x.readByMe) ?? state.announcements[0];
+  if (!a) return h('div', { class: 'ann-banner', hidden: true });
+  const open = state.annBannerOpen;
+  const otherUnread = state.announcements.filter((x) => !x.readByMe && x !== a).length;
+  const toggle = () => {
+    state.annBannerOpen = !state.annBannerOpen;
+    rerenderAnnBanner();
+  };
+  return h(
+    'div',
+    { class: `ann-banner ${a.readByMe ? '' : 'unread'} ${open ? 'open' : ''}` },
+    h(
+      'button',
+      { class: 'ann-banner-head', type: 'button', onclick: toggle, 'aria-expanded': String(open) },
+      h('span', { class: 'ann-banner-icon' }, '📢'),
+      h('span', { class: 'ann-banner-text' }, h('strong', {}, a.title), a.body ? h('span', { class: 'ann-banner-body' }, a.body) : null),
+      h('span', { class: 'ann-banner-caret' }, open ? '▲' : '▼'),
+    ),
+    open
+      ? h(
+          'div',
+          { class: 'ann-banner-detail' },
+          renderImages(a.attachments),
+          h(
+            'div',
+            { class: 'ann-banner-foot' },
+            h('span', { class: 'muted' }, `${a.author?.displayName ?? '退会したユーザー'} ・ ${fmtDateTime(a.createdAt)}`),
+            a.readByMe
+              ? h('span', { class: 'muted' }, '✓ 確認済み')
+              : h('button', { class: 'btn small primary', onclick: guard(() => markRead(a)) }, '確認しました'),
+            h('button', { class: 'link-btn', onclick: guard(() => openView({ type: 'announcements' })) }, 'アナウンス一覧へ'),
+          ),
+        )
+      : null,
+    otherUnread && !open ? h('div', { class: 'ann-banner-more' }, `ほかに未読のアナウンスが ${otherUnread} 件あります`) : null,
+  );
+}
+
+function rerenderAnnBanner() {
+  const old = document.querySelector('.ann-banner');
+  if (old) old.replaceWith(renderAnnBanner());
 }
 
 function renderMessage(m) {
@@ -1178,7 +1224,7 @@ async function markRead(a) {
   const res = await api('POST', `/api/announcements/${a.id}/read`);
   a.readByMe = true;
   a.readCount = res.readCount;
-  render();
+  refreshView();
 }
 
 async function markAllRead() {
@@ -1187,7 +1233,7 @@ async function markAllRead() {
     a.readByMe = true;
     a.readCount = res.readCount;
   }
-  render();
+  refreshView();
 }
 
 async function deleteAnnouncement(a) {
@@ -1852,7 +1898,7 @@ function connectSocket() {
     if (!inCurrentGroup(a.groupId)) return;
     const mine = a.author?.id === state.me.id;
     state.announcements.unshift({ ...a, readByMe: mine });
-    if (!mine) toast(`📢 ${a.title}`);
+    if (!mine) state.annBannerOpen = false;
     refreshView();
   });
 
@@ -1931,6 +1977,7 @@ function refreshView() {
   if (document.querySelector('.composer textarea, .ann-form input')) {
     rerenderSidebar();
     if (state.view?.type === 'channel') {
+      rerenderAnnBanner();
       rerenderMessages();
       rerenderComposerIfPermissionChanged();
     } else {
