@@ -3,8 +3,8 @@
 const express = require('express');
 const { transaction } = require('../db');
 const { HttpError, now, str } = require('../util');
-const { listOrders, getOrder, parseCups, parseMenu } = require('../orders');
-const { broadcastOrder } = require('./orders');
+const { listOrders, getOrder, parseCups, parseMenu, posSettings, setSoldOut, hashPin } = require('../orders');
+const { broadcastOrder, broadcastPosSettings } = require('./orders');
 
 /**
  * 屋台 POS 端末向けの API。POS は別のサイト(GitHub Pages など)や端末内の HTML から動くため、
@@ -26,21 +26,30 @@ module.exports = function posRoutes({ db, rt, push }) {
     next();
   });
 
-  const menuOf = (gid) => {
-    const row = db.prepare('SELECT menu FROM pos_links WHERE group_id = ?').get(gid);
-    return row?.menu ? JSON.parse(row.menu) : null;
-  };
-
   router.get('/state', (req, res) => {
     const group = db.prepare('SELECT name FROM groups WHERE id = ?').get(req.groupId);
-    res.json({ groupName: group.name, menu: menuOf(req.groupId), orders: listOrders(db, req.groupId) });
+    res.json({ groupName: group.name, ...posSettings(db, req.groupId), orders: listOrders(db, req.groupId) });
   });
 
   router.put('/menu', (req, res) => {
     const menu = parseMenu(req.body);
     db.prepare('UPDATE pos_links SET menu = ? WHERE group_id = ?').run(JSON.stringify(menu), req.groupId);
     rt.toPos(req.groupId, 'pos:menu', menu);
+    broadcastPosSettings(db, rt, req.groupId);
     res.json({ menu });
+  });
+
+  /** 売り切れの切り替え(暗証番号なしで操作できる) */
+  router.put('/sold-out', (req, res) => {
+    const soldOut = setSoldOut(db, req.groupId, req.body);
+    broadcastPosSettings(db, rt, req.groupId);
+    res.json({ soldOut });
+  });
+
+  /** 暗証番号の確認(端末側で照合できないブラウザ向け) */
+  router.post('/pin/check', (req, res) => {
+    const { pin } = posSettings(db, req.groupId);
+    res.json({ ok: !pin || (typeof req.body?.pin === 'string' && hashPin(pin.salt, req.body.pin) === pin.hash) });
   });
 
   /** 会計完了。clientId が同じ再送は重複させずに既存のオーダーを返す(電波が悪いときの再送対策) */

@@ -159,6 +159,11 @@ CREATE TABLE IF NOT EXISTS pos_links (
   group_id    INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
   token       TEXT    NOT NULL UNIQUE,
   menu        TEXT,
+  -- 売り切れ {"syrups": [名前], "drinks": [名前]}
+  sold_out    TEXT,
+  -- スタッフ用の暗証番号(全 POS 端末共通)。sha256(salt + 暗証番号)
+  pin_salt    TEXT,
+  pin_hash    TEXT,
   created_at  INTEGER NOT NULL
 );
 
@@ -255,6 +260,13 @@ function migrate(db) {
     if (!columns(db, 'channels').includes('position')) {
       db.exec('ALTER TABLE channels ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
       db.exec('UPDATE channels SET position = id');
+    }
+
+    // v5: POS の売り切れ・暗証番号
+    if (!columns(db, 'pos_links').includes('sold_out')) {
+      db.exec('ALTER TABLE pos_links ADD COLUMN sold_out TEXT');
+      db.exec('ALTER TABLE pos_links ADD COLUMN pin_salt TEXT');
+      db.exec('ALTER TABLE pos_links ADD COLUMN pin_hash TEXT');
     }
 
     // v3: 未読数のバッジ。既存のメッセージは既読扱いにして、更新直後に大量の未読が付かないようにする

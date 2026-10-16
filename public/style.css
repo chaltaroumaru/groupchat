@@ -1354,10 +1354,6 @@ details.level-help summary {
   align-items: baseline;
   gap: 8px;
 }
-.order-no {
-  font-size: 1.6em;
-  font-weight: 800;
-}
 .order-age {
   flex: 1;
 }
@@ -1478,4 +1474,40 @@ details.level-help summary {
   width: 40px;
   height: 40px;
   font-size: 1.1em;
+}
+
+/* ---- お呼び出し番号・売り切れ ---- */
+.order-call {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 2em;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent-dark);
+}
+.order-call small {
+  font-size: 0.4em;
+  font-weight: 700;
+  color: var(--muted);
+}
+.order-no {
+  font-weight: 600;
+  font-size: 0.9em;
+}
+.soldout-list strong {
+  display: block;
+  margin: 14px 0 4px;
+}
+.soldout-tag {
+  margin-left: 8px;
+  font-size: 0.75em;
+  font-weight: 700;
+  color: #fff;
+  background: var(--danger);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.mute-row.is-soldout .name {
+  color: var(--muted);
 }

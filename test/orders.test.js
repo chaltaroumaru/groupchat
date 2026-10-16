@@ -132,7 +132,7 @@ test('会計完了でオーダーが作られ、メンバーと POS 端末にリ
   );
   const notes = srv.pushes.filter((x) => x.endpoint.endsWith('/o2-a'));
   assert.equal(notes.length, 2);
-  assert.equal(notes[0].title, '🧾 オーダー #1(2杯 / 900円)');
+  assert.equal(notes[0].title, '🧾 お呼び出し 1番(#1 / 2杯 / 900円)');
   assert.equal(notes[0].body, '・ブルーキュラソー × 炭酸(アイス)\n・コーラ');
   assert.equal(notes[0].url, `/?g=${gid}&orders=1`);
 
@@ -267,4 +267,105 @@ test('未読数: 開くまでチャットごとに数え、既読にすると他
   // 閲覧できないチャットは既読にできない
   const outsider = await srv.user('o7-x');
   await outsider.post(`/api/channels/${general.id}/read`, {}).expect(404);
+});
+
+test('お呼び出し番号は 1〜15 を繰り返し、注文番号とは別に付く', async () => {
+  const { owner, gid } = await setup('o8');
+  const { body: link } = await owner.post(`/api/groups/${gid}/pos`).expect(200);
+  const p = pos(link.code);
+  const calls = [];
+  for (let i = 1; i <= 17; i++) {
+    const { body } = await p.post('/orders', { clientId: `c${i}`, cups: [CUPS[1]] });
+    calls.push([body.order.number, body.order.callNumber]);
+  }
+  assert.deepEqual(calls.slice(13), [
+    [14, 14],
+    [15, 15],
+    [16, 1],
+    [17, 2],
+  ]);
+  // 履歴を消すと 1 から
+  await p.del('/orders');
+  const { body } = await p.post('/orders', { clientId: 'again', cups: [CUPS[1]] });
+  assert.deepEqual([body.order.number, body.order.callNumber], [1, 1]);
+});
+
+test('暗証番号: 管理者が全端末共通で設定し、POS に配信される', async () => {
+  const crypto = require('node:crypto');
+  const { owner, a, gid } = await setup('o9');
+  await owner.put(`/api/groups/${gid}/pos/pin`, { pin: '1234' }).expect(400, 'POS 連携前');
+  const { body: link } = await owner.post(`/api/groups/${gid}/pos`).expect(200);
+  assert.equal(link.pinSet, false);
+  const p = pos(link.code);
+  assert.equal((await p.get('/state')).body.pin, null);
+  assert.equal((await p.post('/pin/check', { pin: '0000' })).body.ok, true, '未設定なら誰でも開ける');
+
+  const t = io(`${srv.baseUrl}/pos`, { auth: { token: link.code }, transports: ['websocket'] });
+  await new Promise((r) => t.on('connect', r));
+  const got = [];
+  t.on('pos:settings', (s) => got.push(s));
+
+  await a.put(`/api/groups/${gid}/pos/pin`, { pin: '1234' }).expect(403);
+  await owner.put(`/api/groups/${gid}/pos/pin`, { pin: '12' }).expect(400);
+  await owner.put(`/api/groups/${gid}/pos/pin`, { pin: 'abcd' }).expect(400);
+  const { body: set } = await owner.put(`/api/groups/${gid}/pos/pin`, { pin: '2580' }).expect(200);
+  assert.equal(set.pinSet, true);
+  const { pin } = (await p.get('/state')).body;
+  assert.equal(crypto.createHash('sha256').update(`${pin.salt}2580`).digest('hex'), pin.hash, '端末側で照合できる');
+  assert.equal((await p.post('/pin/check', { pin: '2580' })).body.ok, true);
+  assert.equal((await p.post('/pin/check', { pin: '1111' })).body.ok, false);
+  await tick();
+  assert.equal(got.at(-1).pin.hash, pin.hash);
+  // メンバーには暗証番号を渡さない
+  const { body: list } = await a.get(`/api/groups/${gid}/orders`).expect(200);
+  assert.equal(list.pin, undefined);
+
+  await owner.put(`/api/groups/${gid}/pos/pin`, { pin: null }).expect(200);
+  assert.equal((await p.get('/state')).body.pin, null);
+  t.close();
+});
+
+test('売り切れ: POS とメンバーのどちらからでも切り替えられ、全端末に配信される', async () => {
+  const { owner, a, gid, roles } = await setup('o10');
+  const { body: link } = await owner.post(`/api/groups/${gid}/pos`).expect(200);
+  const p = pos(link.code);
+  assert.equal((await p.put('/sold-out', { kind: 'drinks', name: '炭酸', soldOut: true })).status, 400, 'メニュー登録前');
+  await p.put('/menu', { syrups: ['カシス'], drinks: ['炭酸', '紅茶'] });
+
+  const t = io(`${srv.baseUrl}/pos`, { auth: { token: link.code }, transports: ['websocket'] });
+  const m = io(srv.baseUrl, { extraHeaders: { cookie: a.cookie }, transports: ['websocket'] });
+  await Promise.all([t, m].map((s) => new Promise((r) => s.on('connect', r))));
+  const toPos = [];
+  const toMember = [];
+  t.on('pos:settings', (s) => toPos.push(s.soldOut));
+  m.on('pos:settings', (s) => toMember.push(s));
+
+  // POS から(暗証番号なしで操作できる)
+  await owner.put(`/api/groups/${gid}/pos/pin`, { pin: '1234' }).expect(200);
+  assert.deepEqual((await p.put('/sold-out', { kind: 'drinks', name: '炭酸', soldOut: true })).body.soldOut, {
+    syrups: [],
+    drinks: ['炭酸'],
+  });
+  assert.equal((await p.put('/sold-out', { kind: 'drinks', name: 'メロン', soldOut: true })).status, 400);
+  // メンバーから
+  await a.put(`/api/groups/${gid}/pos/sold-out`, { kind: 'syrups', name: 'カシス', soldOut: true }).expect(200);
+  await a.put(`/api/groups/${gid}/pos/sold-out`, { kind: 'drinks', name: '炭酸', soldOut: false }).expect(200);
+  await tick();
+  assert.deepEqual(toPos.at(-1), { syrups: ['カシス'], drinks: [] });
+  assert.deepEqual(toMember.at(-1).soldOut, { syrups: ['カシス'], drinks: [] });
+  assert.equal(toMember.at(-1).pin, undefined);
+  const { body: list } = await a.get(`/api/groups/${gid}/orders`).expect(200);
+  assert.deepEqual(list.menu, { syrups: ['カシス'], drinks: ['炭酸', '紅茶'] });
+  assert.deepEqual(list.soldOut, { syrups: ['カシス'], drinks: [] });
+  assert.deepEqual((await p.get('/state')).body.soldOut, { syrups: ['カシス'], drinks: [] });
+
+  // メニューから消えた項目は売り切れからも消える
+  await p.put('/menu', { syrups: [], drinks: ['炭酸'] });
+  assert.deepEqual((await p.get('/state')).body.soldOut, { syrups: [], drinks: [] });
+
+  // 閲覧のみのメンバーは変更できない
+  await owner.patch(`/api/groups/${gid}/members/${a.id}`, { roleIds: [roles.find((r) => r.level === 'read').id] }).expect(200);
+  await a.put(`/api/groups/${gid}/pos/sold-out`, { kind: 'drinks', name: '炭酸', soldOut: true }).expect(403);
+  t.close();
+  m.close();
 });

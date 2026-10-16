@@ -35,7 +35,7 @@ const state = {
   announcements: [],
   memberCount: 0,
   orders: [], // POS で会計したオーダー(新しい順)
-  ordersMeta: { canUpdate: false, muted: false, posEnabled: false },
+  ordersMeta: { canUpdate: false, muted: false, posEnabled: false, menu: null, soldOut: null },
   orderFilter: 'open', // open = 未提供 / done = 提供済み / all
   reorder: null, // チャットの並べ替え中: 並べ替え後のチャット ID の配列
   sidebarOpen: false,
@@ -663,7 +663,7 @@ async function loadChannels() {
 async function loadOrders() {
   const res = await api('GET', `/api/groups/${state.group.group.id}/orders`);
   state.orders = res.orders;
-  state.ordersMeta = { canUpdate: res.canUpdate, muted: res.muted, posEnabled: res.posEnabled };
+  state.ordersMeta = { canUpdate: res.canUpdate, muted: res.muted, posEnabled: res.posEnabled, menu: res.menu, soldOut: res.soldOut };
 }
 
 async function loadAnnouncements() {
@@ -1081,6 +1081,14 @@ function renderOrders() {
     { class: 'main-head' },
     backButton(),
     h('h2', {}, '🧾 オーダー'),
+    state.ordersMeta.menu
+      ? h(
+          'button',
+          { class: 'btn small', title: '売り切れの設定', onclick: soldOutModal },
+          '🚫',
+          h('span', { class: 'label' }, ' 売り切れ'),
+        )
+      : null,
     h(
       'div',
       { class: 'seg' },
@@ -1152,7 +1160,8 @@ function renderOrderCard(o) {
     h(
       'div',
       { class: 'order-top' },
-      h('span', { class: 'order-no' }, `#${o.number}`),
+      h('span', { class: 'order-call', title: 'お呼び出し番号' }, h('small', {}, '呼出'), o.callNumber),
+      h('span', { class: 'order-no muted', title: '注文番号' }, `#${o.number}`),
       h('span', { class: 'order-age muted', 'data-t': o.createdAt, title: fmtDateTime(o.createdAt) }, ageText(o.createdAt)),
       h('span', { class: `order-status s-${o.status}` }, `${st.icon} ${st.label}`),
     ),
@@ -1169,6 +1178,59 @@ function renderOrderCard(o) {
     ),
   );
 }
+
+// ---------- 売り切れ ----------
+
+/** 売り切れの設定(暗証番号なし)。POS と全員の画面にすぐ反映される */
+function soldOutModal() {
+  const body = h('div', { class: 'soldout-list' });
+  const draw = () => {
+    const { menu, soldOut, canUpdate } = state.ordersMeta;
+    if (!menu) return body.replaceChildren(h('p', { class: 'muted' }, 'POS のメニューがまだ登録されていません'));
+    const section = (kind, title) => [
+      h('strong', {}, title),
+      menu[kind].length === 0 ? h('p', { class: 'muted' }, 'ありません') : null,
+      menu[kind].map((name) => {
+        const out = soldOut?.[kind]?.includes(name);
+        const input = h('input', {
+          type: 'checkbox',
+          checked: !out,
+          disabled: !canUpdate,
+          onchange: guard(async (e) => {
+            try {
+              const res = await api('PUT', `/api/groups/${state.group.group.id}/pos/sold-out`, { kind, name, soldOut: !e.target.checked });
+              state.ordersMeta.soldOut = res.soldOut;
+              draw();
+            } catch (ex) {
+              e.target.checked = !e.target.checked;
+              throw ex;
+            }
+          }),
+        });
+        return h(
+          'label',
+          { class: `mute-row ${out ? 'is-soldout' : ''}` },
+          h('span', { class: 'name' }, name, out ? h('span', { class: 'soldout-tag' }, '売り切れ') : null),
+          h('span', { class: 'switch' }, input, h('span', { class: 'slider' })),
+        );
+      }),
+    ];
+    body.replaceChildren(
+      ...[
+        h('p', { class: 'muted' }, 'オフにした項目は POS で「売り切れ」と表示され、選べなくなります。全ての POS 端末にすぐ反映されます。'),
+        canUpdate ? null : h('p', { class: 'error' }, '閲覧のみの権限では変更できません'),
+        section('drinks', '割る飲料・単品'),
+        section('syrups', 'シロップ'),
+      ]
+        .flat(Infinity)
+        .filter(Boolean),
+    );
+  };
+  draw();
+  modal('🚫 売り切れの設定', body);
+  soldOutRedraw = draw;
+}
+let soldOutRedraw = null;
 
 async function updateOrder(o, status) {
   const { order } = await api('PATCH', `/api/orders/${o.id}`, { status });
@@ -1827,6 +1889,53 @@ function posTab(g) {
       h('h4', {}, '設定済みリンク(任意)'),
       field('POS の URL', posUrl),
       link,
+      h('h4', { style: { marginTop: '20px' } }, '🔒 スタッフ用の暗証番号(全 POS 端末共通)'),
+      h(
+        'p',
+        { class: 'muted' },
+        info.pinSet
+          ? '✅ 設定済み。POS の「メニュー編集」「会計履歴」「連携設定」を開くときに入力が必要です(売り切れの切り替えは不要)。'
+          : '未設定です。設定すると、お客さんが POS の「メニュー編集」「会計履歴」「連携設定」を開けなくなります。',
+      ),
+      (() => {
+        const pin = h('input', {
+          type: 'text',
+          inputmode: 'numeric',
+          pattern: '[0-9]*',
+          maxlength: 6,
+          placeholder: '4〜6桁の数字',
+          autocomplete: 'off',
+        });
+        return h(
+          'div',
+          { class: 'row' },
+          pin,
+          h(
+            'button',
+            {
+              class: 'btn small primary',
+              onclick: guard(async () => {
+                draw(await api('PUT', `/api/groups/${g.group.id}/pos/pin`, { pin: pin.value.trim() }));
+                toast('暗証番号を設定しました。全ての POS 端末に反映されます');
+              }),
+            },
+            info.pinSet ? '変更' : '設定',
+          ),
+          info.pinSet
+            ? h(
+                'button',
+                {
+                  class: 'btn small',
+                  onclick: guard(async () => {
+                    if (!confirm('暗証番号を解除しますか?だれでも POS の設定を開けるようになります。')) return;
+                    draw(await api('PUT', `/api/groups/${g.group.id}/pos/pin`, { pin: null }));
+                  }),
+                },
+                '解除',
+              )
+            : null,
+        );
+      })(),
       h('h4', { style: { marginTop: '20px' } }, 'コードの管理'),
       h(
         'div',
@@ -2416,13 +2525,20 @@ function connectSocket() {
   socket.on('order:new', (o) => {
     if (!inCurrentGroup(o.groupId)) return;
     upsertOrder(o);
-    if (state.view?.type !== 'orders') toast(`🧾 新しいオーダー #${o.number}(${o.cups.length}杯)`);
+    if (state.view?.type !== 'orders') toast(`🧾 新しいオーダー: お呼び出し ${o.callNumber}番(#${o.number} / ${o.cups.length}杯)`);
     refreshOrders();
   });
   socket.on('order:updated', (o) => {
     if (!inCurrentGroup(o.groupId)) return;
     upsertOrder(o);
     refreshOrders();
+  });
+  // POS のメニュー・売り切れの変更
+  socket.on('pos:settings', ({ groupId, menu, soldOut }) => {
+    if (!inCurrentGroup(groupId)) return;
+    Object.assign(state.ordersMeta, { menu, soldOut, posEnabled: true });
+    if (document.querySelector('.soldout-list')) soldOutRedraw?.();
+    if (state.view?.type === 'orders') refreshView();
   });
   socket.on('orders:cleared', ({ groupId }) => {
     if (!inCurrentGroup(groupId)) return;
