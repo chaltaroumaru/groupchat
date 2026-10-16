@@ -21,6 +21,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src ./src
 COPY public ./public
+COPY pos ./pos
 COPY litestream.yml ./
 COPY scripts/docker-entrypoint.sh ./scripts/
 

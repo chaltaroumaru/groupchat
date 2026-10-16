@@ -1829,66 +1829,61 @@ function posTab(g) {
       );
       return;
     }
-    const posUrl = h('input', {
+    const posUrl = `${location.origin}/pos/`;
+    const setupUrl = `${posUrl}?code=${encodeURIComponent(info.code)}`;
+    const readonlyRow = (value) =>
+      h(
+        'div',
+        { class: 'row' },
+        h('input', { type: 'text', readonly: true, value, onfocus: (e) => e.target.select() }),
+        copyBtn('コピー', () => value),
+      );
+    // GitHub Pages など、別の場所に置いた POS を使う場合の設定
+    const otherUrl = h('input', {
       type: 'url',
       placeholder: '例: https://〜.github.io/yatai-pos/',
       value: storage((st) => st.getItem(posUrlKey)) || '',
       oninput: () => {
-        storage((st) => st.setItem(posUrlKey, posUrl.value.trim()));
-        drawLink();
+        storage((st) => st.setItem(posUrlKey, otherUrl.value.trim()));
+        drawOtherLink();
       },
     });
-    const link = h('div', { class: 'pos-link' });
-    const setupUrl = () => {
+    const otherLink = h('div', { class: 'pos-link' });
+    const drawOtherLink = () => {
+      let url = null;
       try {
-        const u = new URL(posUrl.value.trim());
+        const u = new URL(otherUrl.value.trim());
         u.searchParams.set('server', info.serverUrl);
         u.searchParams.set('code', info.code);
-        return u.href;
+        url = u.href;
       } catch {
-        return null;
+        /* URL が未入力・不正 */
       }
-    };
-    const drawLink = () => {
-      const url = setupUrl();
-      link.replaceChildren(
-        url
-          ? h(
-              'div',
-              { class: 'row' },
-              h('input', { type: 'text', readonly: true, value: url, onfocus: (e) => e.target.select() }),
-              copyBtn('コピー', () => url),
-            )
-          : h('span', { class: 'muted' }, 'POS を開いている URL を入力すると、開くだけで連携できるリンクを作れます'),
+      otherLink.replaceChildren(
+        url ? readonlyRow(url) : h('span', { class: 'muted' }, 'POS を開いている URL を入力すると、開くだけで連携できるリンクを作れます'),
       );
     };
-    drawLink();
+    drawOtherLink();
     box.replaceChildren(
       intro,
       h('p', { class: 'push-on' }, '✅ 連携中'),
-      h('h4', {}, 'POS の「🔗 連携設定」に入力する内容'),
-      field(
-        'サーバーの URL',
-        h(
-          'div',
-          { class: 'row' },
-          h('input', { type: 'text', readonly: true, value: info.serverUrl, onfocus: (e) => e.target.select() }),
-          copyBtn('コピー', () => info.serverUrl),
-        ),
+      h('h4', {}, 'POS を開く'),
+      field('POS の URL(各端末でこのページを開き、接続コードを入力)', readonlyRow(posUrl)),
+      field('接続コード', readonlyRow(info.code)),
+      field('設定済みリンク(開くだけで連携できます)', readonlyRow(setupUrl)),
+      h(
+        'p',
+        { class: 'muted' },
+        '⚠ 接続コードや設定済みリンクを知っている人は POS からオーダーを送れます。グループのメンバー以外には教えないでください。',
       ),
-      field(
-        '接続コード',
-        h(
-          'div',
-          { class: 'row' },
-          h('input', { type: 'text', readonly: true, value: info.code, onfocus: (e) => e.target.select() }),
-          copyBtn('コピー', () => info.code),
-        ),
+      h(
+        'details',
+        { class: 'pos-other' },
+        h('summary', {}, '別の場所に置いた POS(GitHub Pages など)を使う場合'),
+        field('サーバーの URL', readonlyRow(info.serverUrl)),
+        field('POS の URL', otherUrl),
+        otherLink,
       ),
-      h('p', { class: 'muted' }, '⚠ 接続コードを知っている人は POS からオーダーを送れます。グループのメンバー以外には教えないでください。'),
-      h('h4', {}, '設定済みリンク(任意)'),
-      field('POS の URL', posUrl),
-      link,
       h('h4', { style: { marginTop: '20px' } }, '🔒 スタッフ用の暗証番号(全 POS 端末共通)'),
       h(
         'p',

@@ -1,6 +1,8 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const express = require('express');
 const { requireAuth } = require('./auth');
 const { HttpError } = require('./util');
@@ -42,6 +44,7 @@ function createApp({ db, mailer, rt, config, push = createPush({ db, rt, config 
   app.use('/api', api);
 
   app.use('/api', (_req, _res, next) => next(new HttpError(404, 'Not Found')));
+  app.use('/pos', posPage());
   app.use(
     express.static(path.join(__dirname, '..', 'public'), {
       setHeaders(res, file) {
@@ -63,16 +66,53 @@ function createApp({ db, mailer, rt, config, push = createPush({ db, rt, config 
   return app;
 }
 
+const csp = (scriptSrc) =>
+  `default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src ${scriptSrc}; connect-src 'self'; ` +
+  "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+
 function securityHeaders(_req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; " +
-      "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
-  );
+  res.setHeader('Content-Security-Policy', csp("'self'"));
   next();
+}
+
+/**
+ * 屋台 POS(pos/index.html、yatai-pos リポジトリと同じファイル)を /pos/ で配信する。
+ * <meta name="pos-server"> を差し込むと、POS はこのサーバーと自動で連携する(サーバー URL の入力が不要になる)。
+ * POS は 1 ファイルで完結しているため、埋め込みスクリプトだけをハッシュで許可する。
+ */
+function posPage() {
+  const dir = path.join(__dirname, '..', 'pos');
+  const router = express.Router();
+  let page = null;
+  const load = () => {
+    if (page) return page;
+    const html = fs
+      .readFileSync(path.join(dir, 'index.html'), 'utf8')
+      .replace('<head>', '<head>\n<meta name="pos-server" content="same-origin">');
+    const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+      (m) => `'sha256-${crypto.createHash('sha256').update(m[1]).digest('base64')}'`,
+    );
+    page = { html, csp: csp(["'self'", ...hashes].join(' ')) };
+    return page;
+  };
+  router.get('/', (req, res) => {
+    if (!req.originalUrl.split('?')[0].endsWith('/')) {
+      const q = req.originalUrl.indexOf('?');
+      return res.redirect(301, `/pos/${q >= 0 ? req.originalUrl.slice(q) : ''}`);
+    }
+    const { html, csp: policy } = load();
+    res.setHeader('Content-Security-Policy', policy);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(html);
+  });
+  router.get('/sw.js', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(dir, 'sw.js'));
+  });
+  return router;
 }
 
 module.exports = { createApp };

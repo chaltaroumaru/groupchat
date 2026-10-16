@@ -1511,3 +1511,10 @@ details.level-help summary {
 .mute-row.is-soldout .name {
   color: var(--muted);
 }
+.pos-other {
+  margin-top: 20px;
+}
+.pos-other summary {
+  cursor: pointer;
+  color: var(--muted, #888);
+}

@@ -369,3 +369,27 @@ test('売り切れ: POS とメンバーのどちらからでも切り替えら�
   t.close();
   m.close();
 });
+
+test('屋台 POS を /pos/ で配信し、このサーバーと自動で連携する印と埋め込みスクリプトの許可を付ける', async () => {
+  const res = await fetch(`${srv.baseUrl}/pos/`);
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.match(html, /<meta name="pos-server" content="same-origin">/);
+  assert.match(html, /屋台POS/);
+  const policy = res.headers.get('content-security-policy');
+  const crypto = require('node:crypto');
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  assert.ok(policy.includes(`'sha256-${crypto.createHash('sha256').update(script).digest('base64')}'`));
+
+  const redirect = await fetch(`${srv.baseUrl}/pos?code=abc`, { redirect: 'manual' });
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get('location'), '/pos/?code=abc');
+
+  const sw = await fetch(`${srv.baseUrl}/pos/sw.js`);
+  assert.equal(sw.status, 200);
+  assert.match(await sw.text(), /yatai-pos-v1/);
+
+  // チャット本体の画面には埋め込みスクリプトを許可しない
+  const root = await fetch(`${srv.baseUrl}/`);
+  assert.match(root.headers.get('content-security-policy'), /script-src 'self';/);
+});

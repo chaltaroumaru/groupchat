@@ -2,7 +2,7 @@
 
 // アプリ本体(HTML / JS / CSS / アイコン)だけをキャッシュする。
 // チャットの内容や画像(/api)は権限確認が必要なためキャッシュしない。
-const CACHE = 'groupchat-shell-v5';
+const CACHE = 'groupchat-shell-v6';
 const SHELL = ['/', '/app.js', '/style.css', '/socket.io/socket.io.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {
@@ -18,7 +18,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith('groupchat-') && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -26,6 +26,7 @@ self.addEventListener('activate', (event) => {
 function isShell(url) {
   if (url.origin !== self.location.origin) return false;
   if (url.pathname.startsWith('/api/')) return false;
+  if (url.pathname === '/pos' || url.pathname.startsWith('/pos/')) return false; // 屋台 POS は専用の Service Worker が扱う
   if (url.pathname.startsWith('/socket.io/')) return url.pathname === '/socket.io/socket.io.js';
   return true;
 }
