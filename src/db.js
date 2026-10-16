@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS channels (
   description         TEXT    NOT NULL DEFAULT '',
   restricted          INTEGER NOT NULL DEFAULT 0,
   default_permission  TEXT    NOT NULL DEFAULT 'write' CHECK (default_permission IN ('read', 'write')),
+  position            INTEGER NOT NULL DEFAULT 0,
   created_by          INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at          INTEGER NOT NULL
 );
@@ -248,6 +249,12 @@ function migrate(db) {
         db.prepare('INSERT OR IGNORE INTO member_roles (group_id, user_id, role_id) VALUES (?, ?, ?)').run(gid, uid, roleIds.get(gid));
       }
       db.exec('ALTER TABLE group_members DROP COLUMN is_admin');
+    }
+
+    // v4: チャットの並び順(既存のチャットは作成順)
+    if (!columns(db, 'channels').includes('position')) {
+      db.exec('ALTER TABLE channels ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+      db.exec('UPDATE channels SET position = id');
     }
 
     // v3: 未読数のバッジ。既存のメッセージは既読扱いにして、更新直後に大量の未読が付かないようにする

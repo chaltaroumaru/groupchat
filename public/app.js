@@ -37,6 +37,7 @@ const state = {
   orders: [], // POS で会計したオーダー(新しい順)
   ordersMeta: { canUpdate: false, muted: false, posEnabled: false },
   orderFilter: 'open', // open = 未提供 / done = 提供済み / all
+  reorder: null, // チャットの並べ替え中: 並べ替え後のチャット ID の配列
   sidebarOpen: false,
   annBannerOpen: false, // チャット上部のアナウンスを全文表示しているか
   pushStatus: null, // この端末の通知の状態(pushStatus() の値)
@@ -683,6 +684,7 @@ const HOME = { type: 'home' };
  */
 async function openView(view, { fromHistory = false } = {}) {
   state.sidebarOpen = false;
+  state.reorder = null;
   pendingFiles = [];
   if (view.type === 'channel') {
     const res = await api('GET', `/api/channels/${view.id}/messages?limit=50`);
@@ -744,13 +746,16 @@ function renderSidebar() {
   const head = h(
     'div',
     { class: 'sidebar-head' },
-    state.groups.length
-      ? h(
-          'select',
-          { onchange: guard((e) => selectGroup(Number(e.target.value))), 'aria-label': 'グループ' },
-          state.groups.map((gr) => h('option', { value: gr.id, selected: g && gr.id === g.group.id }, gr.name)),
-        )
-      : h('div', {}, 'グループ未参加'),
+    // 参加しているグループが 1 つならグループ名だけを表示する
+    state.groups.length === 1 && g
+      ? h('div', { class: 'group-name' }, g.group.name)
+      : state.groups.length
+        ? h(
+            'select',
+            { onchange: guard((e) => selectGroup(Number(e.target.value))), 'aria-label': 'グループ' },
+            state.groups.map((gr) => h('option', { value: gr.id, selected: g && gr.id === g.group.id }, gr.name)),
+          )
+        : h('div', {}, 'グループ未参加'),
     g
       ? h(
           'div',
@@ -759,17 +764,21 @@ function renderSidebar() {
           g.me.isOwner ? '👑 オーナー' : `${LEVEL_ICON[g.me.level]} ${LEVEL_LABEL[g.me.level]}`,
         )
       : null,
-    h(
-      'div',
-      { class: 'row' },
-      h('button', { class: 'btn', onclick: createGroupModal }, '＋ 作成'),
-      h('button', { class: 'btn', onclick: joinGroupModal }, '招待コードで参加'),
-    ),
+    g
+      ? null
+      : h(
+          'div',
+          { class: 'row' },
+          h('button', { class: 'btn', onclick: createGroupModal }, '＋ 作成'),
+          h('button', { class: 'btn', onclick: joinGroupModal }, '招待コードで参加'),
+        ),
   );
 
   const body = h('div', { class: 'sidebar-body' });
   if (g) {
     const pending = openOrders().length;
+    // チャットの一覧はホームに表示する。ここでは未読の合計だけを出す
+    const unreadChats = state.channels.reduce((n, c) => n + (c.unreadCount || 0), 0);
     body.append(
       ...[
         h(
@@ -780,6 +789,7 @@ function renderSidebar() {
           },
           h('span', {}, '🏠'),
           h('span', { class: 'name' }, 'ホーム'),
+          unreadChats ? h('span', { class: 'badge' }, badgeText(unreadChats)) : null,
         ),
         h(
           'div',
@@ -801,26 +811,7 @@ function renderSidebar() {
           h('span', { class: 'name' }, 'アナウンス'),
           unreadAnn ? h('span', { class: 'badge' }, unreadAnn) : null,
         ),
-        h(
-          'div',
-          { class: 'section-title' },
-          h('span', {}, 'チャット'),
-          g.me.canCreateChannels ? h('button', { title: 'チャットを作成', onclick: () => channelModal() }, '＋') : null,
-        ),
-        state.channels.map((c) =>
-          h(
-            'div',
-            {
-              class: `nav-item ${state.view?.type === 'channel' && state.view.id === c.id ? 'active' : ''} ${c.unreadCount ? 'unread' : ''}`,
-              onclick: guard(() => openView({ type: 'channel', id: c.id })),
-            },
-            h('span', {}, c.restricted ? '🔒' : '#'),
-            h('span', { class: 'name' }, c.name),
-            c.myPermission === 'read' ? h('span', { class: 'tag', title: '閲覧のみ' }, '👁') : null,
-            c.unreadCount ? h('span', { class: 'badge' }, badgeText(c.unreadCount)) : null,
-          ),
-        ),
-        h('div', { class: 'section-title' }, h('span', {}, 'グループ')),
+        h('div', { class: 'section-title' }, h('span', {}, '設定')),
         h(
           'div',
           { class: `nav-item ${state.pushStatus && state.pushStatus !== 'on' ? 'push-off' : ''}`, onclick: guard(notificationModal) },
@@ -833,6 +824,7 @@ function renderSidebar() {
           h('span', {}, isAdmin() ? '⚙️' : '👥'),
           h('span', { class: 'name' }, isAdmin() ? 'グループ設定・ロール' : 'メンバー一覧'),
         ),
+        h('div', { class: 'nav-item', onclick: profileModal }, h('span', {}, '👤'), h('span', { class: 'name' }, 'アカウント')),
       ].flat(),
     );
   }
@@ -841,7 +833,6 @@ function renderSidebar() {
     'div',
     { class: 'sidebar-foot' },
     h('span', { class: 'me', title: state.me.email }, `👤 ${state.me.displayName}`),
-    h('button', { class: 'btn small', onclick: profileModal }, '編集'),
     h(
       'button',
       {
@@ -958,6 +949,36 @@ function renderHome() {
     );
   }
 
+  const section = state.reorder
+    ? h(
+        'div',
+        { class: 'home-section' },
+        h('span', {}, '並べ替え中(↑↓ で移動)'),
+        h(
+          'span',
+          { class: 'row-actions' },
+          h('button', { class: 'btn small', onclick: () => ((state.reorder = null), render()) }, 'キャンセル'),
+          h('button', { class: 'btn small primary', onclick: guard(saveChannelOrder) }, '保存'),
+        ),
+      )
+    : h(
+        'div',
+        { class: 'home-section' },
+        h('span', {}, 'チャット'),
+        h(
+          'span',
+          { class: 'row-actions' },
+          isAdmin() && state.channels.length > 1
+            ? h(
+                'button',
+                { class: 'btn small', onclick: () => ((state.reorder = state.channels.map((c) => c.id)), render()) },
+                '↕ 並べ替え',
+              )
+            : null,
+          g.me.canCreateChannels ? h('button', { class: 'btn small', onclick: () => channelModal() }, '＋ 作成') : null,
+        ),
+      );
+
   return h(
     'main',
     { class: 'main' },
@@ -971,15 +992,55 @@ function renderHome() {
         tile('📢', 'アナウンス', unreadAnn ? `未読 ${unreadAnn} 件` : 'グループ全員への連絡', unreadAnn, { type: 'announcements' }),
         tile('🧾', 'オーダー', pending ? `未提供 ${pending} 件` : 'POS で会計した注文', pending, { type: 'orders' }, pending > 0),
       ),
-      h(
-        'div',
-        { class: 'home-section' },
-        h('span', {}, 'チャット'),
-        g.me.canCreateChannels ? h('button', { class: 'btn small', onclick: () => channelModal() }, '＋ 作成') : null,
-      ),
-      list,
+      section,
+      state.reorder ? renderReorderList() : list,
     ),
   );
+}
+
+/** 並べ替え中のチャット一覧(管理者のみ)。↑↓ で入れ替え、「保存」でグループ全員の並び順が変わる */
+function renderReorderList() {
+  const ids = state.reorder;
+  const byId = new Map(state.channels.map((c) => [c.id, c]));
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    render();
+  };
+  return h(
+    'div',
+    { class: 'channel-list reorder' },
+    ids
+      .filter((id) => byId.has(id))
+      .map((id, i, arr) => {
+        const c = byId.get(id);
+        return h(
+          'div',
+          { class: 'channel-row' },
+          h('span', { class: 'channel-icon', style: { background: colorFor(c.id) } }, c.restricted ? '🔒' : '#'),
+          h('span', { class: 'channel-text' }, h('span', { class: 'channel-name' }, c.name)),
+          h(
+            'span',
+            { class: 'move-btns' },
+            h('button', { class: 'btn icon', 'aria-label': '上へ', disabled: i === 0, onclick: () => move(ids.indexOf(id), -1) }, '↑'),
+            h(
+              'button',
+              { class: 'btn icon', 'aria-label': '下へ', disabled: i === arr.length - 1, onclick: () => move(ids.indexOf(id), 1) },
+              '↓',
+            ),
+          ),
+        );
+      }),
+  );
+}
+
+async function saveChannelOrder() {
+  await api('PUT', `/api/groups/${state.group.group.id}/channels/order`, { channelIds: state.reorder });
+  state.reorder = null;
+  await loadChannels();
+  render();
+  toast('チャットの並び順を保存しました');
 }
 
 /** 今日なら時刻、それ以外は日付 */
@@ -1602,8 +1663,11 @@ function joinGroupModal() {
 
 function profileModal() {
   formModal(
-    'プロフィール',
-    [field('表示名', h('input', { type: 'text', name: 'displayName', required: true, maxlength: 40, value: state.me.displayName }))],
+    'アカウント',
+    [
+      h('p', { class: 'muted' }, `メールアドレス: ${state.me.email}`),
+      field('表示名', h('input', { type: 'text', name: 'displayName', required: true, maxlength: 40, value: state.me.displayName })),
+    ],
     '保存',
     async (fd) => {
       const { user } = await api('PATCH', '/api/auth/me', { displayName: fd.get('displayName') });

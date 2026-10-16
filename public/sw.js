@@ -2,7 +2,7 @@
 
 // アプリ本体(HTML / JS / CSS / アイコン)だけをキャッシュする。
 // チャットの内容や画像(/api)は権限確認が必要なためキャッシュしない。
-const CACHE = 'groupchat-shell-v3';
+const CACHE = 'groupchat-shell-v4';
 const SHELL = ['/', '/app.js', '/style.css', '/socket.io/socket.io.js', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png'];
 
 self.addEventListener('install', (event) => {

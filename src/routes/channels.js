@@ -113,7 +113,7 @@ module.exports = function channelRoutes({ db, rt, uploader, push }) {
     const gid = intParam(req.params.gid);
     const me = perm.requireMember(db, gid, req.user.id);
     const channels = db
-      .prepare('SELECT * FROM channels WHERE group_id = ? ORDER BY id')
+      .prepare('SELECT * FROM channels WHERE group_id = ? ORDER BY position, id')
       .all(gid)
       .map((ch) => serializeChannel(db, ch, req.user.id, me))
       .filter((ch) => ch.myPermission !== 'none');
@@ -131,16 +131,46 @@ module.exports = function channelRoutes({ db, rt, uploader, push }) {
     const id = transaction(db, () => {
       const { lastInsertRowid } = db
         .prepare(
-          `INSERT INTO channels (group_id, name, description, restricted, default_permission, created_by, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO channels (group_id, name, description, restricted, default_permission, created_by, created_at, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM channels WHERE group_id = ?))`,
         )
-        .run(gid, input.name, input.description ?? '', input.restricted ? 1 : 0, input.defaultPermission ?? 'write', req.user.id, now());
+        .run(
+          gid,
+          input.name,
+          input.description ?? '',
+          input.restricted ? 1 : 0,
+          input.defaultPermission ?? 'write',
+          req.user.id,
+          now(),
+          gid,
+        );
       const cid = Number(lastInsertRowid);
       writeChannelRoles(cid, input.roles ?? []);
       return cid;
     });
     channelsChanged(gid);
     res.status(201).json({ channel: serializeChannel(db, perm.getChannel(db, id), req.user.id) });
+  });
+
+  /** チャットの並び順を変更する(管理者のみ・グループ全員の表示が変わる)。channelIds の順に並べ、指定されなかったものは後ろに続ける */
+  router.put('/groups/:gid/channels/order', (req, res) => {
+    const gid = intParam(req.params.gid);
+    perm.requireAdmin(db, gid, req.user.id);
+    const ids = req.body?.channelIds;
+    if (!Array.isArray(ids)) throw new HttpError(400, '並び順の指定が不正です');
+    const current = db
+      .prepare('SELECT id FROM channels WHERE group_id = ? ORDER BY position, id')
+      .all(gid)
+      .map((r) => r.id);
+    const order = [...new Set(ids.map((id) => intParam(id, 'チャットID')))];
+    if (order.some((id) => !current.includes(id))) throw new HttpError(400, '存在しないチャットが指定されています');
+    const all = [...order, ...current.filter((id) => !order.includes(id))];
+    transaction(db, () => {
+      const upd = db.prepare('UPDATE channels SET position = ? WHERE id = ?');
+      all.forEach((id, i) => upd.run(i + 1, id));
+    });
+    channelsChanged(gid);
+    res.json({ channelIds: all });
   });
 
   router.patch('/channels/:cid', (req, res) => {

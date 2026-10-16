@@ -1452,3 +1452,30 @@ details.level-help summary {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- サイドバーのグループ名・チャットの並べ替え ---- */
+.group-name {
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.05em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-actions {
+  display: flex;
+  gap: 6px;
+}
+.channel-list.reorder .channel-row {
+  cursor: default;
+}
+.move-btns {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.move-btns .btn {
+  width: 40px;
+  height: 40px;
+  font-size: 1.1em;
+}

@@ -147,3 +147,24 @@ test('管理者ロール: 全チャットとグループ設定を管理できる
   await owner.patch(`/api/groups/${gid}/members/${a.id}`, { roleIds: [] }).expect(200);
   await a.patch(`/api/groups/${gid}`, { name: 'x' }).expect(403);
 });
+
+test('チャットの並び順は管理者だけが変更でき、全員の一覧に反映される', async () => {
+  const owner = await srv.user('ord-owner');
+  const a = await srv.user('ord-a');
+  const { body: created } = await owner.post('/api/groups', { name: '並び順' }).expect(201);
+  const gid = created.id;
+  const { body: g } = await owner.get(`/api/groups/${gid}`).expect(200);
+  await a.post('/api/groups/join', { inviteCode: g.group.inviteCode }).expect(201);
+  const { body: c1 } = await owner.post(`/api/groups/${gid}/channels`, { name: '調理' }).expect(201);
+  const { body: c2 } = await owner.post(`/api/groups/${gid}/channels`, { name: '会計' }).expect(201);
+  const names = async (u) => (await u.get(`/api/groups/${gid}/channels`).expect(200)).body.channels.map((c) => c.name);
+  assert.deepEqual(await names(a), ['全体チャット', '調理', '会計']);
+
+  await a.put(`/api/groups/${gid}/channels/order`, { channelIds: [c2.channel.id] }).expect(403);
+  await owner.put(`/api/groups/${gid}/channels/order`, { channelIds: [999999] }).expect(400);
+  await owner.put(`/api/groups/${gid}/channels/order`, { channelIds: [c2.channel.id, c1.channel.id] }).expect(200);
+  assert.deepEqual(await names(a), ['会計', '調理', '全体チャット']);
+  // 新しいチャットは末尾に追加される
+  await owner.post(`/api/groups/${gid}/channels`, { name: '宣伝' }).expect(201);
+  assert.deepEqual(await names(owner), ['会計', '調理', '全体チャット', '宣伝']);
+});
