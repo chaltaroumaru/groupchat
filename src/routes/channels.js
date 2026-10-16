@@ -16,6 +16,39 @@ function channelRoles(db, channelId) {
     .map((r) => ({ roleId: r.role_id, permission: r.permission }));
 }
 
+/**
+ * 未読数。既読位置が無い(参加後にまだ開いていない)チャットは、グループ参加後のメッセージを未読とする。
+ * 自分のメッセージは数えない。
+ */
+function unreadCount(db, ch, userId) {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM messages m
+        WHERE m.channel_id = ? AND (m.user_id IS NULL OR m.user_id != ?)
+          AND m.id > COALESCE((SELECT last_read_id FROM channel_reads WHERE user_id = ? AND channel_id = ?), 0)
+          AND m.created_at >= COALESCE((SELECT joined_at FROM group_members WHERE group_id = ? AND user_id = ?), 0)`,
+    )
+    .get(ch.id, userId, userId, ch.id, ch.group_id, userId);
+  return row.n;
+}
+
+function lastMessage(db, channelId) {
+  const m = db
+    .prepare(
+      `SELECT m.body, m.created_at, u.display_name,
+              (SELECT COUNT(*) FROM attachments a WHERE a.message_id = m.id) AS images
+         FROM messages m LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 1`,
+    )
+    .get(channelId);
+  if (!m) return null;
+  return {
+    body: m.body ? m.body.slice(0, 80) : m.images ? '📷 画像' : '',
+    authorName: m.display_name ?? '退会したユーザー',
+    createdAt: m.created_at,
+  };
+}
+
 function serializeChannel(db, ch, userId, membership = perm.getMembership(db, ch.group_id, userId)) {
   return {
     id: ch.id,
@@ -28,6 +61,8 @@ function serializeChannel(db, ch, userId, membership = perm.getMembership(db, ch
     myPermission: perm.resolveChannelPermission(db, ch, userId, membership).permission,
     canManage: perm.canManageChannel(membership, ch, userId),
     muted: !!db.prepare('SELECT 1 FROM channel_mutes WHERE user_id = ? AND channel_id = ?').get(userId, ch.id),
+    unreadCount: unreadCount(db, ch, userId),
+    lastMessage: lastMessage(db, ch.id),
   };
 }
 
@@ -236,6 +271,20 @@ module.exports = function channelRoutes({ db, rt, uploader, push }) {
       db.prepare('DELETE FROM channel_mutes WHERE user_id = ? AND channel_id = ?').run(req.user.id, channel.id);
     }
     res.json({ muted: bool(req.body?.muted) });
+  });
+
+  /** ここまで読んだ(lastId 省略時は最新のメッセージまで)。同じユーザーの他の端末のバッジも消す */
+  router.post('/channels/:cid/read', (req, res) => {
+    const { channel } = perm.requireChannelPermission(db, intParam(req.params.cid), req.user.id, 'read');
+    const latest = db.prepare('SELECT MAX(id) AS id FROM messages WHERE channel_id = ?').get(channel.id).id ?? 0;
+    const lastId = req.body?.lastId === undefined ? latest : Math.min(intParam(req.body.lastId, '既読位置'), latest);
+    db.prepare(
+      `INSERT INTO channel_reads (user_id, channel_id, last_read_id) VALUES (?, ?, ?)
+       ON CONFLICT (user_id, channel_id) DO UPDATE SET last_read_id = MAX(last_read_id, excluded.last_read_id)`,
+    ).run(req.user.id, channel.id, lastId);
+    const unread = unreadCount(db, channel, req.user.id);
+    rt.toUsers([req.user.id], 'channel:read', { channelId: channel.id, unreadCount: unread });
+    res.json({ unreadCount: unread });
   });
 
   router.delete('/messages/:mid', (req, res) => {

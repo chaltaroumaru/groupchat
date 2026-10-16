@@ -146,3 +146,42 @@ test('同じ端末で別のユーザーがログインすると宛先が付け�
     [y.id],
   );
 });
+
+test('通知の確認: どのチャットの発言か・内容が表示され、ロールの無い制限付きチャットは通知されない', async () => {
+  const { owner, a, gid } = await setup('p7');
+  const { body: g } = await owner.get(`/api/groups/${gid}`).expect(200);
+  const { body: r } = await owner.post(`/api/groups/${gid}/roles`, { name: '調理班' }).expect(201);
+  await owner.patch(`/api/groups/${gid}/members/${a.id}`, { roleIds: [r.role.id] }).expect(200);
+  const { body: ch } = await owner
+    .post(`/api/groups/${gid}/channels`, { name: '調理班連絡', restricted: true, roles: [{ roleId: r.role.id, permission: 'write' }] })
+    .expect(201);
+  await owner.post(`/api/channels/${ch.channel.id}/messages`, { body: '焼きそばの麺が残り10玉' }).expect(201);
+  await tick();
+
+  // ロールを持つ a には、チャット名とグループ名・送信者・本文が入った通知が届く
+  const [n] = sentTo('p7-a');
+  assert.equal(n.title, `🔒調理班連絡(${g.group.name})`);
+  assert.equal(n.body, 'p7-owner: 焼きそばの麺が残り10玉');
+  assert.equal(n.url, `/?g=${gid}&c=${ch.channel.id}`);
+  assert.equal(n.tag, `channel-${ch.channel.id}`);
+  // ロールを持たない b には届かない
+  assert.equal(sentTo('p7-b').length, 0);
+
+  // ロールを外すと届かなくなる
+  await owner.patch(`/api/groups/${gid}/members/${a.id}`, { roleIds: [] }).expect(200);
+  await owner.post(`/api/channels/${ch.channel.id}/messages`, { body: '2通目' }).expect(201);
+  await tick();
+  assert.equal(sentTo('p7-a').length, 1);
+  assert.equal(sentTo('p7-b').length, 0);
+});
+
+test('画像だけのメッセージも内容がわかる通知になる', async () => {
+  const { owner, general } = await setup('p8');
+  const { PNG } = require('./helpers');
+  const form = new FormData();
+  form.append('images', new Blob([PNG], { type: 'image/png' }), 'a.png');
+  await owner.postForm(`/api/channels/${general}/messages`, form).expect(201);
+  await tick();
+  const [n] = sentTo('p8-a');
+  assert.equal(n.body, 'p8-owner: 📷 画像を送信しました');
+});

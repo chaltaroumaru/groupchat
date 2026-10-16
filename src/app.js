@@ -31,11 +31,13 @@ function createApp({ db, mailer, rt, config, push = createPush({ db, rt, config 
   });
 
   app.use('/api/auth', require('./routes/auth')(deps));
+  app.use('/api/pos', require('./routes/pos')(deps));
   const api = express.Router();
   api.use(requireAuth(db));
   api.use('/groups', require('./routes/groups')(deps));
   api.use(require('./routes/channels')(deps));
   api.use(require('./routes/announcements')(deps));
+  api.use(require('./routes/orders').orderRoutes(deps));
   api.use('/push', require('./routes/push')(deps));
   app.use('/api', api);
 

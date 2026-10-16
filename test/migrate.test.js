@@ -75,3 +75,28 @@ test('旧バージョンでディスクに保存した画像を DB に取り込�
   assert.equal(importLegacyFiles(db, path.join(dir, 'none')), 0);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('未読数の導入時は既存のメッセージを既読扱いにする', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'groupchat-reads-'));
+  const file = path.join(dir, 'v2.db');
+  const db = openDatabase(file);
+  db.exec(`INSERT INTO users VALUES (1, 'o@x', 'h', 'o', 1, NULL, NULL, 0), (2, 'a@x', 'h', 'a', 1, NULL, NULL, 0);
+    INSERT INTO groups VALUES (1, 'g', '', 'CODE', 1, 0);
+    INSERT INTO group_members VALUES (1, 1, 0), (1, 2, 0);
+    INSERT INTO channels (id, group_id, name, created_at) VALUES (1, 1, 'c', 0), (2, 1, 'empty', 0);
+    INSERT INTO messages (id, channel_id, user_id, body, created_at) VALUES (1, 1, 1, 'a', 1), (2, 1, 1, 'b', 2);
+    DELETE FROM app_settings WHERE key = 'channel_reads_v1';`);
+  db.close();
+
+  const reopened = openDatabase(file);
+  const rows = reopened.prepare('SELECT user_id, channel_id, last_read_id FROM channel_reads ORDER BY user_id').all();
+  assert.deepEqual(
+    rows.map((r) => [r.user_id, r.channel_id, r.last_read_id]),
+    [
+      [1, 1, 2],
+      [2, 1, 2],
+    ],
+  );
+  reopened.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

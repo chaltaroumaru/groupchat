@@ -24,9 +24,20 @@ function createRealtime(db) {
       socket.data.view = null;
       socket.on('presence', (p) => {
         const id = (v) => (Number.isSafeInteger(v) && v > 0 ? v : null);
-        socket.data.view = p && p.visible ? { groupId: id(p.groupId), channelId: id(p.channelId) } : null;
+        socket.data.view = p && p.visible ? { groupId: id(p.groupId), channelId: id(p.channelId), orders: p.orders === true } : null;
       });
     });
+
+    // 屋台 POS 端末(別サイトで動くため Cookie ではなく接続コードで認証する)
+    const pos = io.of('/pos');
+    pos.use((socket, next) => {
+      const token = socket.handshake.auth?.token;
+      const link = typeof token === 'string' && db.prepare('SELECT group_id FROM pos_links WHERE token = ?').get(token);
+      if (!link) return next(new Error('unauthorized'));
+      socket.data.groupId = link.group_id;
+      next();
+    });
+    pos.on('connection', (socket) => socket.join(`pos:${socket.data.groupId}`));
     return io;
   }
 
@@ -43,14 +54,28 @@ function createRealtime(db) {
     toUsers(ids, event, payload);
   }
 
-  /** ユーザーがアプリを前面に表示して、指定のグループ・チャットを見ているか */
-  function isViewing(userId, { groupId, channelId }) {
+  /** グループの POS 端末へ送信する */
+  function toPos(groupId, event, payload) {
+    if (io) io.of('/pos').to(`pos:${groupId}`).emit(event, payload);
+  }
+
+  /** 接続コードを変更・無効にしたとき、古いコードで接続中の POS 端末を切断する */
+  function disconnectPos(groupId) {
+    if (io) io.of('/pos').in(`pos:${groupId}`).disconnectSockets(true);
+  }
+
+  /**
+   * ユーザーがアプリを前面に表示して、指定のグループ・チャット(orders = true ならオーダー画面)を見ているか
+   */
+  function isViewing(userId, { groupId, channelId, orders }) {
     if (!io) return false;
     const room = io.sockets.adapter.rooms.get(`user:${userId}`);
     for (const sid of room ?? []) {
       const v = io.sockets.sockets.get(sid)?.data.view;
       if (!v) continue;
-      if (channelId !== undefined ? v.channelId === channelId : v.groupId === groupId) return true;
+      if (orders) {
+        if (v.orders && v.groupId === groupId) return true;
+      } else if (channelId !== undefined ? v.channelId === channelId : v.groupId === groupId) return true;
     }
     return false;
   }
@@ -59,7 +84,7 @@ function createRealtime(db) {
     if (io) io.close();
   }
 
-  return { attach, toUsers, toGroup, isViewing, close };
+  return { attach, toUsers, toGroup, toPos, disconnectPos, isViewing, close };
 }
 
 module.exports = { createRealtime };

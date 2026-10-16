@@ -29,12 +29,14 @@ const state = {
   groups: [],
   group: null, // { group, me, roles, members }
   channels: [],
-  view: null, // { type: 'channel', id } | { type: 'announcements' }
+  view: null, // { type: 'home' } | { type: 'channel', id } | { type: 'announcements' } | { type: 'orders' }
   messages: [],
   hasMore: false,
   announcements: [],
   memberCount: 0,
-  unreadChannels: new Set(),
+  orders: [], // POS で会計したオーダー(新しい順)
+  ordersMeta: { canUpdate: false, muted: false, posEnabled: false },
+  orderFilter: 'open', // open = 未提供 / done = 提供済み / all
   sidebarOpen: false,
   annBannerOpen: false, // チャット上部のアナウンスを全文表示しているか
   pushStatus: null, // この端末の通知の状態(pushStatus() の値)
@@ -136,7 +138,9 @@ window.addEventListener('popstate', () => {
     if (activeLightboxClose) history.pushState({ lightbox: true }, '');
     return;
   }
-  activeLightboxClose?.(true);
+  if (activeLightboxClose) return activeLightboxClose(true);
+  // スマホの「戻る」でチャットなどからホームに戻る
+  if (state.me && state.group && state.view && state.view.type !== 'home') guard(() => openView(HOME, { fromHistory: true }))();
 });
 const DOUBLE_TAP_ZOOM = 2.5;
 
@@ -637,13 +641,12 @@ async function loadGroups() {
 async function selectGroup(gid, view = null) {
   state.group = await api('GET', `/api/groups/${gid}`);
   localStorage.setItem('groupId', gid);
-  state.unreadChannels.clear();
   state.annBannerOpen = false;
-  await Promise.all([loadChannels(), loadAnnouncements()]);
-  const first = state.channels[0];
+  state.view = null;
+  await Promise.all([loadChannels(), loadAnnouncements(), loadOrders()]);
   if (view?.type === 'channel' && !state.channels.some((c) => c.id === view.id)) view = null;
-  state.view = view ?? (first ? { type: 'channel', id: first.id } : { type: 'announcements' });
-  await openView(state.view);
+  // 最初はホーム(チャットの一覧)を表示する
+  await openView(view ?? HOME);
 }
 
 async function reloadGroup() {
@@ -656,6 +659,12 @@ async function loadChannels() {
   state.channels = (await api('GET', `/api/groups/${state.group.group.id}/channels`)).channels;
 }
 
+async function loadOrders() {
+  const res = await api('GET', `/api/groups/${state.group.group.id}/orders`);
+  state.orders = res.orders;
+  state.ordersMeta = { canUpdate: res.canUpdate, muted: res.muted, posEnabled: res.posEnabled };
+}
+
 async function loadAnnouncements() {
   const res = await api('GET', `/api/groups/${state.group.group.id}/announcements`);
   state.announcements = res.announcements;
@@ -666,22 +675,58 @@ function currentChannel() {
   return state.view?.type === 'channel' ? state.channels.find((c) => c.id === state.view.id) : null;
 }
 
-async function openView(view) {
-  state.view = view;
+const HOME = { type: 'home' };
+
+/**
+ * 画面を切り替える。ホーム以外を開いたときは履歴を 1 つ積み、スマホの「戻る」でホームに戻れるようにする。
+ * @param {{ fromHistory?: boolean }} [opts] fromHistory = 「戻る」操作による移動(履歴は積まない)
+ */
+async function openView(view, { fromHistory = false } = {}) {
   state.sidebarOpen = false;
   pendingFiles = [];
   if (view.type === 'channel') {
-    state.unreadChannels.delete(view.id);
     const res = await api('GET', `/api/channels/${view.id}/messages?limit=50`);
     state.messages = res.messages;
     state.hasMore = res.hasMore;
-  } else {
+    markChannelRead(view.id, { now: true });
+  } else if (view.type === 'announcements') {
     await loadAnnouncements();
+  } else if (view.type === 'orders') {
+    await loadOrders();
+  } else {
+    await Promise.all([loadChannels(), loadOrders()]);
   }
+  state.view = view;
+  if (!fromHistory && view.type !== 'home' && !history.state?.view) history.pushState({ view: true }, '');
   render();
   scrollToBottom();
   sendPresence();
 }
+
+/** ホームに戻る(「戻る」と同じ動きにして履歴が積み重ならないようにする) */
+function goHome() {
+  if (history.state?.view) history.back();
+  else guard(() => openView(HOME))();
+}
+
+// ---------- 未読 ----------
+
+const readTimers = new Map();
+/** チャットを既読にする。メッセージが続けて届いたときに毎回送らないよう少し待ってからまとめて送る */
+function markChannelRead(channelId, { now = false } = {}) {
+  const c = state.channels.find((x) => x.id === channelId);
+  if (c) c.unreadCount = 0;
+  clearTimeout(readTimers.get(channelId));
+  const send = () => {
+    readTimers.delete(channelId);
+    api('POST', `/api/channels/${channelId}/read`, {}).catch(() => {});
+  };
+  if (now) send();
+  else readTimers.set(channelId, setTimeout(send, 800));
+}
+
+const badgeText = (n) => (n > 99 ? '99+' : String(n));
+const openOrders = () => state.orders.filter((o) => o.status !== 'done');
 
 function scrollToBottom() {
   const box = document.querySelector('.messages');
@@ -724,8 +769,28 @@ function renderSidebar() {
 
   const body = h('div', { class: 'sidebar-body' });
   if (g) {
+    const pending = openOrders().length;
     body.append(
       ...[
+        h(
+          'div',
+          {
+            class: `nav-item ${state.view?.type === 'home' ? 'active' : ''}`,
+            onclick: () => (state.view?.type === 'home' ? rerenderSidebar() : goHome()),
+          },
+          h('span', {}, '🏠'),
+          h('span', { class: 'name' }, 'ホーム'),
+        ),
+        h(
+          'div',
+          {
+            class: `nav-item ${state.view?.type === 'orders' ? 'active' : ''} ${pending ? 'unread' : ''}`,
+            onclick: guard(() => openView({ type: 'orders' })),
+          },
+          h('span', {}, '🧾'),
+          h('span', { class: 'name' }, 'オーダー'),
+          pending ? h('span', { class: 'badge' }, badgeText(pending)) : null,
+        ),
         h(
           'div',
           {
@@ -746,13 +811,13 @@ function renderSidebar() {
           h(
             'div',
             {
-              class: `nav-item ${state.view?.type === 'channel' && state.view.id === c.id ? 'active' : ''} ${state.unreadChannels.has(c.id) ? 'unread' : ''}`,
+              class: `nav-item ${state.view?.type === 'channel' && state.view.id === c.id ? 'active' : ''} ${c.unreadCount ? 'unread' : ''}`,
               onclick: guard(() => openView({ type: 'channel', id: c.id })),
             },
             h('span', {}, c.restricted ? '🔒' : '#'),
             h('span', { class: 'name' }, c.name),
             c.myPermission === 'read' ? h('span', { class: 'tag', title: '閲覧のみ' }, '👁') : null,
-            state.unreadChannels.has(c.id) ? h('span', { class: 'dot' }) : null,
+            c.unreadCount ? h('span', { class: 'badge' }, badgeText(c.unreadCount)) : null,
           ),
         ),
         h('div', { class: 'section-title' }, h('span', {}, 'グループ')),
@@ -836,8 +901,233 @@ function renderMain() {
       ),
     );
   }
-  return state.view?.type === 'channel' ? renderChannel() : renderAnnouncements();
+  if (state.view?.type === 'channel') return renderChannel();
+  if (state.view?.type === 'announcements') return renderAnnouncements();
+  if (state.view?.type === 'orders') return renderOrders();
+  return renderHome();
 }
+
+function backButton() {
+  return h('button', { class: 'btn icon back-btn', 'aria-label': 'ホームに戻る', title: 'ホームに戻る', onclick: goHome }, '‹');
+}
+
+// ---------- ホーム ----------
+
+/** ホーム: このグループのチャット一覧(タップで開く・未読数のバッジ付き)とアナウンス・オーダーへの入口 */
+function renderHome() {
+  const g = state.group;
+  const unreadAnn = state.announcements.filter((a) => !a.readByMe).length;
+  const pending = openOrders().length;
+  const tile = (icon, label, sub, count, view, alert) =>
+    h(
+      'button',
+      { class: `home-tile ${count ? 'has-badge' : ''} ${alert ? 'alert' : ''}`, onclick: guard(() => openView(view)) },
+      h('span', { class: 'home-tile-icon' }, icon),
+      h('span', { class: 'home-tile-text' }, h('strong', {}, label), h('span', { class: 'muted' }, sub)),
+      count ? h('span', { class: 'badge big' }, badgeText(count)) : null,
+    );
+
+  const list = h('div', { class: 'channel-list' });
+  if (state.channels.length === 0) list.append(h('div', { class: 'empty small' }, '参加しているチャットはありません'));
+  for (const c of state.channels) {
+    const last = c.lastMessage;
+    list.append(
+      h(
+        'button',
+        { class: `channel-row ${c.unreadCount ? 'unread' : ''}`, onclick: guard(() => openView({ type: 'channel', id: c.id })) },
+        h('span', { class: 'channel-icon', style: { background: colorFor(c.id) } }, c.restricted ? '🔒' : '#'),
+        h(
+          'span',
+          { class: 'channel-text' },
+          h(
+            'span',
+            { class: 'channel-name' },
+            c.name,
+            c.myPermission === 'read' ? h('span', { class: 'tag', title: '閲覧のみ' }, ' 👁') : null,
+            c.muted ? h('span', { class: 'tag', title: '通知オフ' }, ' 🔕') : null,
+          ),
+          h('span', { class: 'channel-last' }, last ? `${last.authorName}: ${last.body}` : c.description || 'まだメッセージはありません'),
+        ),
+        h(
+          'span',
+          { class: 'channel-side' },
+          last ? h('span', { class: 'channel-time' }, fmtShort(last.createdAt)) : null,
+          c.unreadCount ? h('span', { class: 'badge big', 'aria-label': `未読 ${c.unreadCount} 件` }, badgeText(c.unreadCount)) : null,
+        ),
+      ),
+    );
+  }
+
+  return h(
+    'main',
+    { class: 'main' },
+    h('div', { class: 'main-head' }, menuButton(), h('h2', {}, g.group.name)),
+    h(
+      'div',
+      { class: 'home' },
+      h(
+        'div',
+        { class: 'home-tiles' },
+        tile('📢', 'アナウンス', unreadAnn ? `未読 ${unreadAnn} 件` : 'グループ全員への連絡', unreadAnn, { type: 'announcements' }),
+        tile('🧾', 'オーダー', pending ? `未提供 ${pending} 件` : 'POS で会計した注文', pending, { type: 'orders' }, pending > 0),
+      ),
+      h(
+        'div',
+        { class: 'home-section' },
+        h('span', {}, 'チャット'),
+        g.me.canCreateChannels ? h('button', { class: 'btn small', onclick: () => channelModal() }, '＋ 作成') : null,
+      ),
+      list,
+    ),
+  );
+}
+
+/** 今日なら時刻、それ以外は日付 */
+function fmtShort(t) {
+  const d = new Date(t);
+  return d.toDateString() === new Date().toDateString() ? fmtTime(t) : d.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' });
+}
+
+// ---------- オーダー ----------
+
+const ORDER_STATUS = {
+  new: { label: '未着手', icon: '🆕' },
+  making: { label: '作成中', icon: '🥤' },
+  done: { label: '提供済み', icon: '✅' },
+};
+const yen = (n) => `${n.toLocaleString('ja-JP')}円`;
+const cupName = (cup) => (cup.syrups.length ? `${cup.syrups.join('・')} × ${cup.drink}` : cup.drink);
+const ageText = (t) => {
+  const min = Math.floor((Date.now() - t) / 60000);
+  return min < 1 ? 'たった今' : min < 60 ? `${min}分前` : fmtShort(t);
+};
+
+/** オーダー画面: POS で会計した注文を作る順(古い順)に並べ、作成中・提供済みを全員で共有する */
+function renderOrders() {
+  const open = openOrders();
+  const filters = [
+    ['open', `未提供 ${open.length}`],
+    ['done', '提供済み'],
+    ['all', 'すべて'],
+  ];
+  let list;
+  if (state.orderFilter === 'open') list = [...open].reverse();
+  else if (state.orderFilter === 'done') list = state.orders.filter((o) => o.status === 'done');
+  else list = state.orders;
+
+  const head = h(
+    'div',
+    { class: 'main-head' },
+    backButton(),
+    h('h2', {}, '🧾 オーダー'),
+    h(
+      'div',
+      { class: 'seg' },
+      filters.map(([k, label]) =>
+        h(
+          'button',
+          {
+            class: k === state.orderFilter ? 'active' : '',
+            onclick: () => {
+              state.orderFilter = k;
+              render();
+            },
+          },
+          label,
+        ),
+      ),
+    ),
+  );
+
+  const body = h('div', { class: 'orders' });
+  if (list.length === 0) {
+    body.append(
+      h(
+        'div',
+        { class: 'empty' },
+        h(
+          'div',
+          {},
+          h('p', {}, state.orderFilter === 'open' ? '未提供のオーダーはありません 🎉' : 'オーダーはまだありません'),
+          state.ordersMeta.posEnabled
+            ? h('p', { class: 'muted' }, 'POS で会計が完了すると、ここにリアルタイムで表示されます。')
+            : h(
+                'p',
+                { class: 'muted' },
+                'POS とまだ連携していません。管理者が「グループ設定 → POS連携」で接続コードを発行し、POS の「🔗 連携設定」に入力してください。',
+              ),
+        ),
+      ),
+    );
+  } else {
+    body.append(h('div', { class: 'orders-grid' }, list.map(renderOrderCard)));
+  }
+  return h('main', { class: 'main' }, head, body);
+}
+
+function renderOrderCard(o) {
+  const st = ORDER_STATUS[o.status];
+  const set = (status) => guard(() => updateOrder(o, status));
+  const can = state.ordersMeta.canUpdate;
+  let actions = null;
+  if (can) {
+    if (o.status === 'new') {
+      actions = [
+        h('button', { class: 'btn primary', onclick: set('making') }, '作成開始'),
+        h('button', { class: 'btn', onclick: set('done') }, '提供済み'),
+      ];
+    } else if (o.status === 'making') {
+      actions = [
+        h('button', { class: 'btn primary ok', onclick: set('done') }, '✅ 提供済みにする'),
+        h('button', { class: 'link-btn', onclick: set('new') }, '未着手に戻す'),
+      ];
+    } else {
+      actions = [h('button', { class: 'link-btn', onclick: set('making') }, '未提供に戻す')];
+    }
+  }
+  return h(
+    'div',
+    { class: `order-card status-${o.status}`, 'data-id': o.id },
+    h(
+      'div',
+      { class: 'order-top' },
+      h('span', { class: 'order-no' }, `#${o.number}`),
+      h('span', { class: 'order-age muted', 'data-t': o.createdAt, title: fmtDateTime(o.createdAt) }, ageText(o.createdAt)),
+      h('span', { class: `order-status s-${o.status}` }, `${st.icon} ${st.label}`),
+    ),
+    h(
+      'ul',
+      { class: 'order-items' },
+      o.cups.map((c) => h('li', {}, h('span', {}, cupName(c)), c.ice ? h('span', { class: 'ice' }, '🧊 アイス') : null)),
+    ),
+    h(
+      'div',
+      { class: 'order-foot' },
+      h('span', { class: 'muted' }, `${o.cups.length}杯 ・ ${yen(o.total)}`),
+      actions ? h('span', { class: 'order-actions' }, actions) : null,
+    ),
+  );
+}
+
+async function updateOrder(o, status) {
+  const { order } = await api('PATCH', `/api/orders/${o.id}`, { status });
+  upsertOrder(order);
+  refreshView();
+}
+
+function upsertOrder(order) {
+  const i = state.orders.findIndex((x) => x.id === order.id);
+  if (i >= 0) state.orders[i] = order;
+  else {
+    state.orders.unshift(order);
+    state.orders.sort((a, b) => b.id - a.id);
+  }
+}
+
+// 「〇分前」の表示を更新する
+setInterval(() => {
+  for (const el of document.querySelectorAll('.order-age[data-t]')) el.textContent = ageText(Number(el.dataset.t));
+}, 30_000);
 
 // ---------- チャット ----------
 
@@ -847,14 +1137,14 @@ function renderChannel() {
     return h(
       'main',
       { class: 'main' },
-      h('div', { class: 'main-head' }, menuButton()),
+      h('div', { class: 'main-head' }, backButton()),
       h('div', { class: 'empty' }, 'チャットを選択してください'),
     );
 
   const head = h(
     'div',
     { class: 'main-head' },
-    menuButton(),
+    backButton(),
     h('h2', {}, `${ch.restricted ? '🔒' : '#'} ${ch.name}`),
     h('span', { class: 'desc muted' }, ch.description),
     h(
@@ -1149,7 +1439,7 @@ function renderAnnouncements() {
   const head = h(
     'div',
     { class: 'main-head' },
-    menuButton(),
+    backButton(),
     h('h2', {}, '📢 アナウンス'),
     h('span', { class: 'desc muted' }, 'グループ全員への連絡事項'),
     state.announcements.some((a) => !a.readByMe)
@@ -1331,6 +1621,7 @@ function groupSettingsModal(tab = 'members') {
         ['members', 'メンバー'],
         ['roles', 'ロール'],
         ['info', '招待・設定'],
+        ['pos', 'POS連携'],
       ]
     : [
         ['members', 'メンバー'],
@@ -1372,6 +1663,138 @@ function groupSettingsModal(tab = 'members') {
   if (tab === 'members') content.append(membersTab(g, refresh));
   if (tab === 'roles') content.append(rolesTab(g, refresh));
   if (tab === 'info') content.append(infoTab(g, m, refresh));
+  if (tab === 'pos') content.append(posTab(g));
+}
+
+/** POS 連携: 接続コードを発行し、POS 端末の「🔗 連携設定」に入力してもらう */
+function posTab(g) {
+  const box = h('div', { class: 'pos-tab' }, h('p', { class: 'muted' }, '読み込み中…'));
+  const posUrlKey = 'posUrl';
+  const copyBtn = (label, text) =>
+    h(
+      'button',
+      {
+        class: 'btn small',
+        onclick: guard(async () => {
+          await navigator.clipboard.writeText(text());
+          toast('コピーしました');
+        }),
+      },
+      label,
+    );
+
+  const draw = (info) => {
+    const intro = h(
+      'p',
+      {},
+      '屋台 POS で「会計完了」を押すと、その注文がこのグループの「🧾 オーダー」画面にリアルタイムで届きます。POS のメニュー・会計履歴も全ての POS 端末で共有されます。',
+    );
+    if (!info.enabled) {
+      box.replaceChildren(
+        intro,
+        h(
+          'button',
+          {
+            class: 'btn primary',
+            onclick: guard(async () => draw(await api('POST', `/api/groups/${g.group.id}/pos`))),
+          },
+          '🔗 連携を始める(接続コードを発行)',
+        ),
+      );
+      return;
+    }
+    const posUrl = h('input', {
+      type: 'url',
+      placeholder: '例: https://〜.github.io/yatai-pos/',
+      value: storage((st) => st.getItem(posUrlKey)) || '',
+      oninput: () => {
+        storage((st) => st.setItem(posUrlKey, posUrl.value.trim()));
+        drawLink();
+      },
+    });
+    const link = h('div', { class: 'pos-link' });
+    const setupUrl = () => {
+      try {
+        const u = new URL(posUrl.value.trim());
+        u.searchParams.set('server', info.serverUrl);
+        u.searchParams.set('code', info.code);
+        return u.href;
+      } catch {
+        return null;
+      }
+    };
+    const drawLink = () => {
+      const url = setupUrl();
+      link.replaceChildren(
+        url
+          ? h(
+              'div',
+              { class: 'row' },
+              h('input', { type: 'text', readonly: true, value: url, onfocus: (e) => e.target.select() }),
+              copyBtn('コピー', () => url),
+            )
+          : h('span', { class: 'muted' }, 'POS を開いている URL を入力すると、開くだけで連携できるリンクを作れます'),
+      );
+    };
+    drawLink();
+    box.replaceChildren(
+      intro,
+      h('p', { class: 'push-on' }, '✅ 連携中'),
+      h('h4', {}, 'POS の「🔗 連携設定」に入力する内容'),
+      field(
+        'サーバーの URL',
+        h(
+          'div',
+          { class: 'row' },
+          h('input', { type: 'text', readonly: true, value: info.serverUrl, onfocus: (e) => e.target.select() }),
+          copyBtn('コピー', () => info.serverUrl),
+        ),
+      ),
+      field(
+        '接続コード',
+        h(
+          'div',
+          { class: 'row' },
+          h('input', { type: 'text', readonly: true, value: info.code, onfocus: (e) => e.target.select() }),
+          copyBtn('コピー', () => info.code),
+        ),
+      ),
+      h('p', { class: 'muted' }, '⚠ 接続コードを知っている人は POS からオーダーを送れます。グループのメンバー以外には教えないでください。'),
+      h('h4', {}, '設定済みリンク(任意)'),
+      field('POS の URL', posUrl),
+      link,
+      h('h4', { style: { marginTop: '20px' } }, 'コードの管理'),
+      h(
+        'div',
+        { class: 'row' },
+        h(
+          'button',
+          {
+            class: 'btn small',
+            onclick: guard(async () => {
+              if (!confirm('接続コードを再発行しますか?今つながっている POS 端末は、新しいコードを入力し直すまで送信できなくなります。'))
+                return;
+              draw(await api('POST', `/api/groups/${g.group.id}/pos`));
+            }),
+          },
+          '接続コードを再発行',
+        ),
+        h(
+          'button',
+          {
+            class: 'btn small danger',
+            onclick: guard(async () => {
+              if (!confirm('POS 連携をやめますか?POS からオーダーが届かなくなります(これまでのオーダーは残ります)。')) return;
+              draw(await api('DELETE', `/api/groups/${g.group.id}/pos`));
+            }),
+          },
+          '連携をやめる',
+        ),
+      ),
+    );
+  };
+  api('GET', `/api/groups/${g.group.id}/pos`).then(draw, (err) => box.replaceChildren(h('div', { class: 'error' }, err.message)));
+  return box;
 }
 
 function membersTab(g, refresh) {
@@ -1891,18 +2314,56 @@ function connectSocket() {
   });
 
   socket.on('message:new', (msg) => {
-    const ch = currentChannel();
-    if (ch && ch.id === msg.channelId) {
+    const c = state.channels.find((x) => x.id === msg.channelId);
+    if (!c) return;
+    const mine = msg.author?.id === state.me.id;
+    c.lastMessage = {
+      body: msg.body ? msg.body.slice(0, 80) : msg.attachments.length ? '📷 画像' : '',
+      authorName: msg.author?.displayName ?? '退会したユーザー',
+      createdAt: msg.createdAt,
+    };
+    if (currentChannel()?.id === msg.channelId) {
       if (state.messages.some((m) => m.id === msg.id)) return;
       const box = document.querySelector('.messages');
       const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 120;
       state.messages.push(msg);
       rerenderMessages();
-      if (atBottom || msg.author?.id === state.me.id) scrollToBottom();
-    } else if (state.channels.some((c) => c.id === msg.channelId)) {
-      state.unreadChannels.add(msg.channelId);
+      if (atBottom || mine) scrollToBottom();
+      // 画面を見ているなら既読、裏に回しているなら未読として数える
+      if (document.visibilityState === 'visible') markChannelRead(c.id);
+      else if (!mine) c.unreadCount++;
       rerenderSidebar();
+    } else {
+      if (!mine) c.unreadCount++;
+      if (state.view?.type === 'home') refreshView();
+      else rerenderSidebar();
     }
+  });
+
+  // 別の端末で既読にした
+  socket.on('channel:read', ({ channelId, unreadCount }) => {
+    const c = state.channels.find((x) => x.id === channelId);
+    if (!c || c.unreadCount === unreadCount) return;
+    c.unreadCount = unreadCount;
+    if (state.view?.type === 'home') refreshView();
+    else rerenderSidebar();
+  });
+
+  socket.on('order:new', (o) => {
+    if (!inCurrentGroup(o.groupId)) return;
+    upsertOrder(o);
+    if (state.view?.type !== 'orders') toast(`🧾 新しいオーダー #${o.number}(${o.cups.length}杯)`);
+    refreshOrders();
+  });
+  socket.on('order:updated', (o) => {
+    if (!inCurrentGroup(o.groupId)) return;
+    upsertOrder(o);
+    refreshOrders();
+  });
+  socket.on('orders:cleared', ({ groupId }) => {
+    if (!inCurrentGroup(groupId)) return;
+    state.orders = [];
+    refreshOrders();
   });
 
   socket.on('message:deleted', ({ id }) => {
@@ -1978,12 +2439,16 @@ function connectSocket() {
   );
 }
 
-/** 権限変更で現在のチャットが見えなくなった場合は移動する */
+function refreshOrders() {
+  if (state.view?.type === 'orders' || state.view?.type === 'home') refreshView();
+  else rerenderSidebar();
+}
+
+/** 権限変更で現在のチャットが見えなくなった場合はホームに戻る */
 async function ensureViewAccessible() {
   if (state.view?.type === 'channel' && !currentChannel()) {
     toast('このチャットを閲覧する権限がなくなりました');
-    const first = state.channels[0];
-    await openView(first ? { type: 'channel', id: first.id } : { type: 'announcements' });
+    await openView(HOME, { fromHistory: true });
   } else {
     refreshView();
   }
@@ -2121,17 +2586,22 @@ function sendPresence() {
   socket.emit('presence', {
     groupId: state.group?.group.id ?? null,
     channelId: state.view?.type === 'channel' ? state.view.id : null,
+    orders: state.view?.type === 'orders',
     visible: document.visibilityState === 'visible',
   });
 }
 
-/** 通知をタップして開いたときの移動先(?g=グループ&c=チャット / &ann=1) */
+/** 通知をタップして開いたときの移動先(?g=グループ&c=チャット / &ann=1 / &orders=1) */
 function parseNavTarget(search) {
   const p = new URLSearchParams(search);
   const g = Number(p.get('g'));
   if (!g) return null;
   const c = Number(p.get('c'));
-  return { groupId: g, view: c ? { type: 'channel', id: c } : p.get('ann') ? { type: 'announcements' } : null };
+  let view = null;
+  if (c) view = { type: 'channel', id: c };
+  else if (p.get('ann')) view = { type: 'announcements' };
+  else if (p.get('orders')) view = { type: 'orders' };
+  return { groupId: g, view };
 }
 
 async function navigateTo(target) {
@@ -2262,6 +2732,28 @@ function renderMuteList() {
     { class: 'mute-list' },
     h('strong', {}, `チャットごとの通知(${state.group.group.name})`),
     h('p', { class: 'muted' }, 'オフにしたチャットは通知されません(未読の印は付きます)。📢 アナウンスは大事な連絡のため常に通知されます。'),
+    (() => {
+      const input = h('input', {
+        type: 'checkbox',
+        checked: !state.ordersMeta.muted,
+        onchange: guard(async (e) => {
+          const on = e.target.checked;
+          try {
+            await api('PUT', `/api/groups/${state.group.group.id}/orders/mute`, { muted: !on });
+            state.ordersMeta.muted = !on;
+          } catch (ex) {
+            e.target.checked = !on;
+            throw ex;
+          }
+        }),
+      });
+      return h(
+        'label',
+        { class: 'mute-row' },
+        h('span', { class: 'name' }, '🧾 オーダー(POS で会計したとき)'),
+        h('span', { class: 'switch' }, input, h('span', { class: 'slider' })),
+      );
+    })(),
     state.channels.map((c) => {
       const input = h('input', {
         type: 'checkbox',
@@ -2320,7 +2812,15 @@ function setOffline(offline) {
   navigator.serviceWorker?.addEventListener('message', (e) => {
     if (e.data?.type === 'navigate' && state.me) guard(() => navigateTo(parseNavTarget(new URL(e.data.url, location.origin).search)))();
   });
-  document.addEventListener('visibilitychange', sendPresence);
+  document.addEventListener('visibilitychange', () => {
+    sendPresence();
+    // 裏に回している間に届いたメッセージは、画面に戻ったときに既読にする
+    const ch = currentChannel();
+    if (document.visibilityState === 'visible' && ch?.unreadCount) {
+      markChannelRead(ch.id, { now: true });
+      rerenderSidebar();
+    }
+  });
 
   // スマホ表示でサイドバー外をタップしたら閉じる
   document.addEventListener('click', (e) => {

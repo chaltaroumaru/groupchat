@@ -145,6 +145,45 @@ CREATE TABLE IF NOT EXISTS channel_mutes (
   PRIMARY KEY (user_id, channel_id)
 );
 
+-- チャットごとの既読位置(未読数のバッジ表示用)
+CREATE TABLE IF NOT EXISTS channel_reads (
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  channel_id    INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  last_read_id  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, channel_id)
+);
+
+-- 屋台 POS との連携(グループごとに 1 つ)。token を知っている POS 端末だけがオーダーを送れる
+CREATE TABLE IF NOT EXISTS pos_links (
+  group_id    INTEGER PRIMARY KEY REFERENCES groups(id) ON DELETE CASCADE,
+  token       TEXT    NOT NULL UNIQUE,
+  menu        TEXT,
+  created_at  INTEGER NOT NULL
+);
+
+-- POS で会計したオーダー
+-- status: new = 未着手 / making = 作成中 / done = 提供済み
+CREATE TABLE IF NOT EXISTS orders (
+  id          INTEGER PRIMARY KEY,
+  group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  number      INTEGER NOT NULL,
+  client_id   TEXT    NOT NULL,
+  cups        TEXT    NOT NULL,
+  total       INTEGER NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'making', 'done')),
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  UNIQUE (group_id, client_id)
+);
+CREATE INDEX IF NOT EXISTS idx_orders_group ON orders(group_id, id);
+
+-- オーダーの通知をオフにしたメンバー
+CREATE TABLE IF NOT EXISTS order_mutes (
+  user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, group_id)
+);
+
 -- サーバーの設定値(プッシュ通知の鍵など)
 CREATE TABLE IF NOT EXISTS app_settings (
   key    TEXT PRIMARY KEY,
@@ -209,6 +248,16 @@ function migrate(db) {
         db.prepare('INSERT OR IGNORE INTO member_roles (group_id, user_id, role_id) VALUES (?, ?, ?)').run(gid, uid, roleIds.get(gid));
       }
       db.exec('ALTER TABLE group_members DROP COLUMN is_admin');
+    }
+
+    // v3: 未読数のバッジ。既存のメッセージは既読扱いにして、更新直後に大量の未読が付かないようにする
+    if (!db.prepare("SELECT 1 FROM app_settings WHERE key = 'channel_reads_v1'").get()) {
+      db.exec(`INSERT OR IGNORE INTO channel_reads (user_id, channel_id, last_read_id)
+               SELECT gm.user_id, c.id, MAX(m.id) FROM channels c
+                 JOIN group_members gm ON gm.group_id = c.group_id
+                 JOIN messages m ON m.channel_id = c.id
+                GROUP BY gm.user_id, c.id`);
+      db.exec("INSERT INTO app_settings (key, value) VALUES ('channel_reads_v1', '1')");
     }
   });
 }

@@ -3,6 +3,7 @@
 const webpush = require('web-push');
 const perm = require('./permissions');
 const { now } = require('./util');
+const { cupName } = require('./orders');
 
 /**
  * Web Push の鍵(VAPID)。環境変数があればそれを使い、無ければ初回起動時に生成して DB に保存する。
@@ -115,11 +116,33 @@ function createPush({ db, rt, config, env = process.env, send = webpush.sendNoti
     });
   }
 
+  /** POS からのオーダー: オーダーの通知をオフにしておらず、オーダー画面を見ていないメンバーに通知 */
+  function notifyOrder(groupId, order) {
+    const muted = new Set(
+      db
+        .prepare('SELECT user_id FROM order_mutes WHERE group_id = ?')
+        .all(groupId)
+        .map((r) => r.user_id),
+    );
+    const ids = db
+      .prepare('SELECT user_id FROM group_members WHERE group_id = ?')
+      .all(groupId)
+      .map((r) => r.user_id)
+      .filter((uid) => !muted.has(uid) && !rt.isViewing(uid, { groupId, orders: true }));
+    const lines = order.cups.map((c) => `・${cupName(c)}${c.ice ? '(アイス)' : ''}`);
+    return sendToUsers(ids, {
+      title: `🧾 オーダー #${order.number}(${order.cups.length}杯 / ${order.total.toLocaleString('ja-JP')}円)`,
+      body: truncate(lines.join('\n'), 150),
+      url: `/?g=${groupId}&orders=1`,
+      tag: `order-${order.id}`,
+    });
+  }
+
   function test(userId) {
     return sendToUsers([userId], { title: '🔔 通知テスト', body: 'この端末で通知を受け取れます', url: '/', tag: 'test' });
   }
 
-  return { publicKey: keys.publicKey, subscribe, unsubscribe, notifyMessage, notifyAnnouncement, test };
+  return { publicKey: keys.publicKey, subscribe, unsubscribe, notifyMessage, notifyAnnouncement, notifyOrder, test };
 }
 
 module.exports = { createPush };
