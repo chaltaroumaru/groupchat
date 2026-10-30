@@ -47,7 +47,7 @@ function parseCups(value) {
     if (!Array.isArray(syrups) || syrups.length > 5) throw new HttpError(400, 'シロップの指定が不正です');
     const price = c.price;
     if (!Number.isSafeInteger(price) || price < 0 || price > 100000) throw new HttpError(400, '金額が不正です');
-    return { syrups: syrups.map((s) => label(s, 'シロップ名')), drink: label(c.drink, '飲料名'), ice: c.ice === true, price };
+    return { syrups: syrups.map((s) => label(s, 'シロップ名')), drink: label(c.drink, '飲料名'), ice: c.ice === true, ...(c.presale === true ? { presale: true } : {}), price };
   });
 }
 

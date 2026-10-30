@@ -1168,7 +1168,7 @@ function renderOrderCard(o) {
     h(
       'ul',
       { class: 'order-items' },
-      o.cups.map((c) => h('li', {}, h('span', {}, cupName(c)), c.ice ? h('span', { class: 'ice' }, '🧊 アイス') : null)),
+      o.cups.map((c) => h('li', {}, h('span', {}, cupName(c)), c.ice ? h('span', { class: 'ice' }, '🧊 アイス') : null, c.presale ? h('span', { class: 'presale' }, '🎟 前売り') : null)),
     ),
     h(
       'div',

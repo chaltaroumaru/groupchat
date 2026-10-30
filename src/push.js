@@ -129,7 +129,7 @@ function createPush({ db, rt, config, env = process.env, send = webpush.sendNoti
       .all(groupId)
       .map((r) => r.user_id)
       .filter((uid) => !muted.has(uid) && !rt.isViewing(uid, { groupId, orders: true }));
-    const lines = order.cups.map((c) => `・${cupName(c)}${c.ice ? '(アイス)' : ''}`);
+    const lines = order.cups.map((c) => `・${cupName(c)}${c.ice ? '(アイス)' : ''}${c.presale ? '(前売り)' : ''}`);
     return sendToUsers(ids, {
       title: `🧾 お呼び出し ${order.callNumber}番(#${order.number} / ${order.cups.length}杯 / ${order.total.toLocaleString('ja-JP')}円)`,
       body: truncate(lines.join('\n'), 150),

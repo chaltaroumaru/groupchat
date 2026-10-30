@@ -127,6 +127,10 @@
   #drink-block .choice input:checked + span { border-color: var(--drink); color: var(--drink); background: #ebfbee; }
   #ice-block .choice input:checked + span { border-color: var(--ice); color: var(--ice); background: #f8f0fc; }
   #ice-block .choices { grid-template-columns: repeat(2, minmax(150px, 260px)); }
+  #presale-block h3 .tag { background: var(--accent); }
+  #presale-block .choice input:checked + span { border-color: var(--accent); color: var(--accent); background: #fff4e6; }
+  #presale-block .choices { grid-template-columns: repeat(2, minmax(150px, 260px)); }
+  .presale-mark { color: var(--accent); font-size: 13px; font-weight: bold; margin-left: 4px; }
   .plus { font-size: 15px; margin-left: 6px; font-weight: normal; }
 
   /* ===== 会計画面 ===== */
@@ -263,7 +267,7 @@
     <div class="menu-head">
       <div>
         <h1>メニューを選んでください</h1>
-        <div class="price-note">ドリンクはすべて <b id="base-price-label">350円</b>(アイストッピングは＋<span class="ice-price-label">50円</span>)</div>
+        <div class="price-note">ドリンクはすべて <b id="base-price-label">350円</b>(アイストッピングは＋<span class="ice-price-label">50円</span>)・前売り券があればドリンク無料</div>
         <span class="conn hidden" id="conn-status"></span>
         <span class="last-call hidden" id="last-call"></span>
       </div>
@@ -283,6 +287,14 @@
     <section class="block" id="drink-block">
       <h3>割る飲料・単品 <span class="tag">1つえらぶ</span></h3>
       <div class="choices" id="drink-choices"></div>
+    </section>
+
+    <section class="block" id="presale-block">
+      <h3>前売り券 <span class="tag">ドリンク無料</span></h3>
+      <div class="choices">
+        <label class="choice"><input type="checkbox" id="presale-yes"><span>あり<span class="plus">ドリンク0円</span></span></label>
+        <label class="choice"><input type="checkbox" id="presale-no" checked><span>なし</span></label>
+      </div>
     </section>
 
     <section class="block" id="ice-block">
@@ -713,16 +725,20 @@ function currentSelection() {
   const syrups = checked('syrup').map((i) => menu.syrups[i]);
   const drinks = checked('drink').map((i) => menu.drinks[i]);
   const ice = $('ice-yes').checked;
-  // 選んだ飲料が1杯になる。シロップとアイスはその杯に適用
-  return { syrups, drinks, cups: drinks.map((drink) => ({ syrups, drink, ice })) };
+  const presale = $('presale-yes').checked;
+  // 選んだ飲料が1杯になる。シロップ・アイス・前売り券はその杯に適用
+  return { syrups, drinks, cups: drinks.map((drink) => ({ syrups, drink, ice, ...(presale ? { presale: true } : {}) })) };
 }
-function cupPrice(cup) { return BASE_PRICE + (cup.ice ? ICE_PRICE : 0); }
+/** ドリンク代(前売り券なら無料)。アイストッピングは前売りでも別料金 */
+function drinkPrice(cup) { return cup.presale ? 0 : BASE_PRICE; }
+function cupPrice(cup) { return drinkPrice(cup) + (cup.ice ? ICE_PRICE : 0); }
 function cupName(cup) { return cup.syrups.length ? `${cup.syrups.join('・')} × ${cup.drink}` : cup.drink; }
 function allCups() { return [...cart, ...currentSelection().cups]; }
 function totalOf(cups) { return cups.reduce((sum, c) => sum + cupPrice(c), 0); }
 
 function cupLines(cup) {
-  let html = `<li><span>${escapeHtml(cupName(cup))}</span><span>${yen(BASE_PRICE)}</span></li>`;
+  const mark = cup.presale ? '<span class="presale-mark">🎟 前売り</span>' : '';
+  let html = `<li><span>${escapeHtml(cupName(cup))}${mark}</span><span>${yen(drinkPrice(cup))}</span></li>`;
   if (cup.ice) html += `<li class="sub"><span>　└ アイストッピング</span><span>＋${yen(ICE_PRICE)}</span></li>`;
   return html;
 }
@@ -749,6 +765,7 @@ function renderSummary() {
 function clearSelection() {
   document.querySelectorAll('#menu input[type=checkbox]').forEach((el) => (el.checked = false));
   $('ice-no').checked = true;
+  $('presale-no').checked = true;
 }
 
 // ---------- 会計 ----------
@@ -791,6 +808,7 @@ function renderHistory() {
   let cupsTotal = 0;
   let iceCount = 0;
   let iceAmount = 0;
+  let presaleCount = 0;
   let grandTotal = 0;
 
   history.forEach((tx) => {
@@ -798,7 +816,8 @@ function renderHistory() {
     tx.cups.forEach((cup) => {
       cupsTotal += 1;
       const base = cup.price - (cup.ice ? ICE_PRICE : 0);
-      cupCount(items, cupName(cup), base);
+      cupCount(items, cupName(cup) + (cup.presale ? '(前売り)' : ''), base);
+      if (cup.presale) presaleCount += 1;
       cupCount(drinks, cup.drink, 0);
       cupCount(syrups, cup.syrups.length ? cup.syrups.join('・') : 'シロップなし', 0);
       if (cup.ice) { iceCount += 1; iceAmount += ICE_PRICE; }
@@ -811,6 +830,7 @@ function renderHistory() {
 
   let itemRows = tallyRows(items, '杯', true);
   if (iceCount) itemRows += `<tr><td>アイストッピング</td><td class="num">${iceCount}個</td><td class="num">${yen(iceAmount)}</td></tr>`;
+  if (presaleCount) itemRows += `<tr><td>🎟 うち前売り券</td><td class="num">${presaleCount}杯</td><td class="num">${yen(0)}</td></tr>`;
   $('tally-items').innerHTML = itemRows;
   $('tally-count').textContent = `${cupsTotal}杯`;
   $('tally-total').textContent = yen(grandTotal);
@@ -821,7 +841,7 @@ function renderHistory() {
     ? [...history].reverse().map((tx, i) => `
       <div class="tx">
         <div class="tx-head"><span>${txNumber(tx, history.length - i)} <span class="time">${formatTime(tx.time)}</span>${txStatus(tx)}</span><span>${yen(tx.total)}</span></div>
-        <div class="tx-items">${tx.cups.map((c) => escapeHtml(cupName(c)) + (c.ice ? '(アイス)' : '')).join(' / ')}</div>
+        <div class="tx-items">${tx.cups.map((c) => escapeHtml(cupName(c)) + (c.ice ? '(アイス)' : '') + (c.presale ? '(前売り)' : '')).join(' / ')}</div>
       </div>`).join('')
     : '<p class="empty">まだ会計がありません</p>';
 }
@@ -845,6 +865,9 @@ $('menu').addEventListener('change', (e) => {
   // アイスの「あり」「なし」はどちらか一方だけ
   if (e.target.id === 'ice-yes') $('ice-no').checked = !e.target.checked;
   if (e.target.id === 'ice-no') $('ice-yes').checked = !e.target.checked;
+  // 前売り券の「あり」「なし」も同様
+  if (e.target.id === 'presale-yes') $('presale-no').checked = !e.target.checked;
+  if (e.target.id === 'presale-no') $('presale-yes').checked = !e.target.checked;
   renderSummary();
 });
 

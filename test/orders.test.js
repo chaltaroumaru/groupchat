@@ -164,6 +164,19 @@ test('不正な注文・メニューは拒否し、メニューは全端末で�
   assert.equal((await p.post('/orders', { cups: CUPS })).status, 400);
   assert.equal((await p.put('/menu', { syrups: [], drinks: [] })).status, 400);
 
+  // 前売り券(ドリンク無料)の印は true のときだけ保持する
+  const presale = await p.post('/orders', {
+    clientId: 'presale-1',
+    cups: [
+      { syrups: [], drink: '炭酸', ice: true, presale: true, price: 50 },
+      { syrups: [], drink: 'コーラ', ice: false, presale: 'yes', price: 350 },
+    ],
+  });
+  assert.equal(presale.status, 201);
+  assert.equal(presale.body.order.total, 400);
+  assert.equal(presale.body.order.cups[0].presale, true);
+  assert.equal('presale' in presale.body.order.cups[1], false);
+
   const t2 = io(`${srv.baseUrl}/pos`, { auth: { token: link.code }, transports: ['websocket'] });
   await new Promise((r) => t2.on('connect', r));
   const menus = [];

@@ -1390,6 +1390,13 @@ details.level-help summary {
   font-size: 1.05em;
   font-weight: 600;
 }
+.order-items .presale {
+  font-size: 0.8em;
+  font-weight: 700;
+  color: #e8590c;
+  white-space: nowrap;
+  margin-left: 6px;
+}
 .order-items .ice {
   font-size: 0.8em;
   font-weight: 700;
