@@ -130,6 +130,7 @@
   #presale-block h3 .tag { background: var(--accent); }
   #presale-block .choice input:checked + span { border-color: var(--accent); color: var(--accent); background: #fff4e6; }
   #presale-block .choices { grid-template-columns: repeat(2, minmax(150px, 260px)); }
+  .stat-note { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
   .presale-mark { color: var(--accent); font-size: 13px; font-weight: bold; margin-left: 4px; }
   .plus { font-size: 15px; margin-left: 6px; font-weight: normal; }
 
@@ -336,7 +337,7 @@
   </div>
 
   <div class="stats">
-    <div class="stat main"><span>総会計</span><strong id="stat-total">0円</strong></div>
+    <div class="stat main"><span>総会計</span><strong id="stat-total">0円</strong><small class="stat-note" id="stat-total-note"></small></div>
     <div class="stat"><span>会計回数</span><strong id="stat-count">0回</strong></div>
     <div class="stat"><span>販売杯数</span><strong id="stat-cups">0杯</strong></div>
   </div>
@@ -447,6 +448,7 @@
 <script>
 const BASE_PRICE = 350;
 const ICE_PRICE = 50;
+const PRESALE_PRICE = 300;   // 前売り券の販売価格。会計画面では0円、会計履歴ではこの金額で売上に数える
 const STORAGE_KEY = 'yatai-pos-menu';
 const DEFAULT_MENU = {
   syrups: ['ブルーキュラソー', 'カシス'],
@@ -809,13 +811,14 @@ function renderHistory() {
   let iceCount = 0;
   let iceAmount = 0;
   let presaleCount = 0;
-  let grandTotal = 0;
+  let paidTotal = 0;
 
   history.forEach((tx) => {
-    grandTotal += tx.total;
+    paidTotal += tx.total;
     tx.cups.forEach((cup) => {
       cupsTotal += 1;
-      const base = cup.price - (cup.ice ? ICE_PRICE : 0);
+      // 前売りの杯は、当日は0円でも前売り券の代金として売上に数える
+      const base = cup.presale ? PRESALE_PRICE : cup.price - (cup.ice ? ICE_PRICE : 0);
       cupCount(items, cupName(cup) + (cup.presale ? '(前売り)' : ''), base);
       if (cup.presale) presaleCount += 1;
       cupCount(drinks, cup.drink, 0);
@@ -824,13 +827,16 @@ function renderHistory() {
     });
   });
 
+  const presaleAmount = presaleCount * PRESALE_PRICE;
+  const grandTotal = paidTotal + presaleAmount;
   $('stat-total').textContent = yen(grandTotal);
+  $('stat-total-note').textContent = presaleCount ? `当日のお会計 ${yen(paidTotal)} ＋ 前売り券 ${yen(presaleAmount)}` : '';
   $('stat-count').textContent = `${history.length}回`;
   $('stat-cups').textContent = `${cupsTotal}杯`;
 
   let itemRows = tallyRows(items, '杯', true);
   if (iceCount) itemRows += `<tr><td>アイストッピング</td><td class="num">${iceCount}個</td><td class="num">${yen(iceAmount)}</td></tr>`;
-  if (presaleCount) itemRows += `<tr><td>🎟 うち前売り券</td><td class="num">${presaleCount}杯</td><td class="num">${yen(0)}</td></tr>`;
+  if (presaleCount) itemRows += `<tr style="color:var(--muted)"><td>🎟 (内訳)うち前売り券</td><td class="num">${presaleCount}杯</td><td class="num">${yen(presaleAmount)}</td></tr>`;
   $('tally-items').innerHTML = itemRows;
   $('tally-count').textContent = `${cupsTotal}杯`;
   $('tally-total').textContent = yen(grandTotal);
@@ -840,7 +846,7 @@ function renderHistory() {
   $('tx-list').innerHTML = history.length
     ? [...history].reverse().map((tx, i) => `
       <div class="tx">
-        <div class="tx-head"><span>${txNumber(tx, history.length - i)} <span class="time">${formatTime(tx.time)}</span>${txStatus(tx)}</span><span>${yen(tx.total)}</span></div>
+        <div class="tx-head"><span>${txNumber(tx, history.length - i)} <span class="time">${formatTime(tx.time)}</span>${txStatus(tx)}</span><span>${yen(tx.total + tx.cups.filter((c) => c.presale).length * PRESALE_PRICE)}</span></div>
         <div class="tx-items">${tx.cups.map((c) => escapeHtml(cupName(c)) + (c.ice ? '(アイス)' : '') + (c.presale ? '(前売り)' : '')).join(' / ')}</div>
       </div>`).join('')
     : '<p class="empty">まだ会計がありません</p>';
